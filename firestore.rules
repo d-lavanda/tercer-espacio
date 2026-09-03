@@ -1,0 +1,141 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firestore para Tercer Espacio.
+// Ver ARQUITECTURA-FIREBASE.md para la explicación en español llano de
+// cada decisión. Aquí solo va la implementación.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function myUid() {
+      return request.auth.uid;
+    }
+
+    function myProfileExists() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(myUid()));
+    }
+
+    function myProfile() {
+      return get(/databases/$(database)/documents/users/$(myUid())).data;
+    }
+
+    function myRole() {
+      return myProfileExists() ? myProfile().role : null;
+    }
+
+    function isActive() {
+      return myProfileExists() && myProfile().status == "activo";
+    }
+
+    function isAdmin() {
+      return isActive() && myRole() == "admin";
+    }
+
+    function isEditor() {
+      return isActive() && myRole() == "editor";
+    }
+
+    function isCoop() {
+      return isActive() && myRole() == "cooperador";
+    }
+
+    function appSettings() {
+      return get(/databases/$(database)/documents/settings/app).data;
+    }
+
+    function coopPerms() {
+      let mine = myProfile();
+      return ("coopPerms" in mine) ? mine.coopPerms : appSettings().coopPerms;
+    }
+
+    // ---------- Usuarios ----------
+    match /users/{uid} {
+      allow read: if isActive() || (isSignedIn() && myUid() == uid);
+      allow create: if isSignedIn() && myUid() == uid
+                    && request.resource.data.role in ["editor", "cooperador", "lector"]
+                    && request.resource.data.status == "pendiente";
+      allow update: if isAdmin()
+                    // el admin nunca puede crear un segundo administrador
+                    ? !(request.resource.data.role == "admin" && resource.data.role != "admin")
+                    // cualquier otra persona activa solo puede tocar su propio perfil,
+                    // y nunca su propio rol ni su propio estado
+                    : (isActive() && myUid() == uid
+                       && request.resource.data.role == resource.data.role
+                       && request.resource.data.status == resource.data.status);
+      allow delete: if isAdmin() && resource.data.role != "admin";
+    }
+
+    // Documento técnico para evitar nombres de usuario duplicados.
+    match /usernames/{username} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.uid == myUid();
+      allow update, delete: if false;
+    }
+
+    // ---------- Inventario ----------
+    match /items/{id} {
+      allow read: if isActive();
+      allow create, update: if isAdmin() || isEditor() || (isCoop() && coopPerms().invEdit);
+      allow delete: if isAdmin() || isEditor() || (isCoop() && coopPerms().invDelete);
+    }
+
+    // ---------- Calendario ----------
+    match /events/{id} {
+      allow read: if isActive();
+      allow create, update: if isAdmin() || isEditor() || (isCoop() && coopPerms().calEdit);
+      allow delete: if isAdmin() || isEditor() || (isCoop() && coopPerms().calDelete);
+    }
+
+    // ---------- Billetera ----------
+    match /transactions/{id} {
+      allow read, write: if isAdmin();
+    }
+
+    // ---------- Pizarra ----------
+    match /notes/{id} {
+      allow read: if isActive();
+      allow create: if isActive();
+      allow update, delete: if isAdmin() || (isActive() && resource.data.createdBy == myUid());
+    }
+
+    // ---------- Avisos (campana de notificaciones) ----------
+    match /avisos/{id} {
+      allow read: if isActive()
+                  && (resource.data.targetUserId == null || resource.data.targetUserId == myUid());
+      allow create: if isActive();
+      // solo se permite marcar como visto (agregar el propio uid a seenBy), nada más
+      allow update: if isActive()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["seenBy"]);
+      allow delete: if false;
+    }
+
+    // ---------- Avisos de servicio al Administrador ----------
+    match /serviceNotices/{id} {
+      allow read: if isAdmin() || (isActive() && resource.data.userId == myUid());
+      allow create: if isActive() && request.resource.data.userId == myUid() && request.resource.data.reply == null;
+      allow update: if isAdmin()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly(["reply"]);
+      allow delete: if false;
+    }
+
+    // ---------- Historial de actividad ----------
+    match /activityLog/{id} {
+      allow read: if isAdmin();
+      allow create: if isActive();
+      allow update, delete: if false;
+    }
+
+    // ---------- Configuración global ----------
+    match /settings/app {
+      // debe poder leerse ANTES de iniciar sesión: es lo que muestra si hay modo
+      // mantenimiento activo y los textos de las pantallas de login/registro.
+      // No contiene nada sensible.
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+  }
+}

@@ -1,0 +1,35 @@
+rules_version = '2';
+
+// Reglas de seguridad de Firebase Storage para Tercer Espacio.
+// Cualquier persona con sesión iniciada puede ver las imágenes (fotos de
+// perfil, artículos, flyers) — son parte de la app, no información privada.
+// Solo se puede subir una imagen (no cualquier archivo), y con un límite de
+// tamaño razonable.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches('image/.*');
+    }
+
+    match /users/{uid}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /items/{itemId}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isImage() && request.resource.size < 5 * 1024 * 1024;
+    }
+
+    match /events/{eventId}/{fileName} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn() && isImage() && request.resource.size < 8 * 1024 * 1024;
+    }
+  }
+}

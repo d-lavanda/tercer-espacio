@@ -1,0 +1,9 @@
+node_modules/
+shots*/
+*.log
+.DS_Store
+.firebase/
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+*-debug.log

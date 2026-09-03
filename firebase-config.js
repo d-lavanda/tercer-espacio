@@ -17,12 +17,12 @@
    ============================================================ */
 
 const firebaseConfig = {
-  apiKey: "TU-API-KEY-AQUI",
-  authDomain: "tu-proyecto.firebaseapp.com",
-  projectId: "tu-proyecto",
-  storageBucket: "tu-proyecto.appspot.com",
-  messagingSenderId: "000000000000",
-  appId: "1:000000000000:web:xxxxxxxxxxxxxxxxxxxxxx"
+  apiKey: "AIzaSyC-TBKGKq0lAoB-KxBOSDMwnwXD0OQGrzo",
+  authDomain: "tercer-espacio.firebaseapp.com",
+  projectId: "tercer-espacio",
+  storageBucket: "tercer-espacio.firebasestorage.app",
+  messagingSenderId: "683193346609",
+  appId: "1:683193346609:web:105d69864ac6ce312ec310"
 };
 
 /* Si el navegador no pudo cargar el SDK de Firebase (por ejemplo, sin

@@ -1294,8 +1294,6 @@ select.input.role-select:disabled { opacity: 0.85; cursor: not-allowed; }
       <button class="btn btn-primary btn-block" id="login-submit-btn" onclick="withLoading('login-submit-btn', handleLogin, 500)">Entrar</button>
 
       <div class="auth-switch">¿Aún no tienes cuenta? <a onclick="goTo('view-register')">Solicita tu registro</a></div>
-
-      <div class="demo-hint"><b>Modo demostración —</b> prueba con <b>admin / admin123</b> (Administrador), <b>paloma / paloma123</b> (Editor), <b>caro / caro123</b> (Cooperador) o <b>iker / iker123</b> (Lector).</div>
     </div>
   </div>
 </section>
@@ -2345,11 +2343,11 @@ select.input.role-select:disabled { opacity: 0.85; cursor: not-allowed; }
 <div class="modal-backdrop hidden" id="modal-temp-password" onclick="if(event.target===this) closeModal('modal-temp-password')">
   <div class="modal" style="max-width:420px;">
     <div class="modal-head">
-      <span class="card-title">Contraseña temporal generada</span>
+      <span class="card-title">Restablecer contraseña</span>
       <button class="btn-icon" onclick="closeModal('modal-temp-password')">✕</button>
     </div>
     <div class="modal-body">
-      <p class="text-secondary" style="font-size:13.5px; margin-bottom:14px;">Compártesela a <b id="temp-pass-user">—</b> por un medio seguro. Recomiéndale cambiarla en cuanto inicie sesión, desde "Mi perfil".</p>
+      <p class="text-secondary" style="font-size:13.5px; margin-bottom:14px;">Este sistema no tiene servidor propio, así que no puede cambiar automáticamente la contraseña de otra persona — eso solo se puede hacer desde la consola de Firebase. Para restablecer la de <b id="temp-pass-user">—</b>: entra a Firebase console → Authentication → Users, busca este correo (cópialo con el botón) y usa "Reset password" desde ahí.</p>
       <div class="temp-pass-box">
         <span id="temp-pass-value">—</span>
         <button class="btn-icon" onclick="copyTempPassword()" title="Copiar">
@@ -2460,20 +2458,14 @@ function avatarHTML(person, size) {
   return `<div class="avatar" style="width:${size}px;height:${size}px;background:linear-gradient(135deg, ${color}, #1a1213); font-size:${size*0.36}px;">${initialsFor(person.fullName || person.name || "?")}</div>`;
 }
 
-/* ---------- Datos de ejemplo: usuarios ---------- */
-const users = [
-  { id: nextId(), fullName: "Renata Solís", username: "admin", password: "admin123", phone: "5511220033", role: "admin", status: "activo", photo: null, since: "2024-02-10", sessionValid: true },
-  { id: nextId(), fullName: "Paloma Mora Ibáñez", username: "paloma", password: "paloma123", phone: "5522334455", role: "editor", status: "activo", photo: null, since: "2024-05-18", sessionValid: true },
-  { id: nextId(), fullName: "Carolina Reyes", username: "caro", password: "caro123", phone: "5533445566", role: "cooperador", status: "activo", photo: null, since: "2024-08-02", sessionValid: true },
-  { id: nextId(), fullName: "Iker Navarro", username: "iker", password: "iker123", phone: "5544556677", role: "lector", status: "activo", photo: null, since: "2025-01-22", sessionValid: true },
-  { id: nextId(), fullName: "Diego Cruz Pineda", username: "diegocruz", password: "diego123", phone: "5555667788", role: "editor", status: "activo", photo: null, since: "2024-11-30", sessionValid: true },
-  { id: nextId(), fullName: "Fernanda Uribe", username: "fer_uribe", password: "fer123456", phone: "5566778899", role: "cooperador", status: "activo", photo: null, since: "2025-03-14", sessionValid: true },
-  { id: nextId(), fullName: "Santiago Lomelí", username: "santilo", password: "santi123", phone: "5577889900", role: "lector", status: "activo", photo: null, since: "2025-06-01", sessionValid: true }
-];
-const pendingUsers = [
-  { id: nextId(), fullName: "Ximena Torres", username: "xime_t", password: "ximena123", phone: "5588990011", photo: null, requestedAt: "2026-08-15" },
-  { id: nextId(), fullName: "Mateo Rangel", username: "mateo99", password: "mateo2026", phone: "5599001122", photo: null, requestedAt: "2026-08-17" }
-];
+/* ---------- Usuarios ----------
+   Ya NO son datos de ejemplo: se llenan solos desde Firestore en cuanto
+   Firebase confirma la sesión (ver bloque FIREBASE más abajo, función
+   attachUsersListener). Empiezan vacíos a propósito. Las contraseñas ya
+   no viven aquí en ningún lado: las guarda Firebase Authentication, nunca
+   en texto plano. */
+let users = [];
+let pendingUsers = [];
 
 /* ---------- Solicitudes de restablecer contraseña ----------
    Cuando alguien toca "¿Olvidaste tu contraseña?" en el login, se registra
@@ -2520,11 +2512,22 @@ let authQuoteLoginSubtitle = "Sistema interno de gestión para el colectivo: inv
 let authQuoteRegisterTitle = "Súmate a la curaduría,\nconstruye comunidad.";
 let authQuoteRegisterSubtitle = "Tu solicitud será revisada por un administrador antes de darte acceso al sistema. Es rápido: solo necesitamos algunos datos.";
 
-function findUser(id) { return users.find(u => u.id === id); }
+// Devuelve el usuario con ese id. Si el id es null/undefined (nadie ha
+// iniciado sesión), regresa undefined, como antes. Si el id SÍ existe pero
+// ya no corresponde a nadie (por ejemplo, una referencia antigua a alguien
+// que fue eliminado, o datos de ejemplo de antes de conectar Firebase),
+// regresa un usuario "fantasma" en vez de romper la pantalla que lo pida.
+function findUser(id) {
+  if (id === null || id === undefined) return undefined;
+  return users.find(u => u.id === id) || {
+    id, fullName: "Integrante desconocido", username: "usuario-eliminado",
+    role: "lector", photo: null, phone: "", since: "", sessionValid: true
+  };
+}
 function currentUser() { return findUser(state.currentUserId); }
 
 /* ---------- Datos de ejemplo: inventario ---------- */
-let deptCounters = { Audio: 7, Mobiliario: 4, Arte: 4, Electricidad: 4 };
+let deptCounters = { Audio: 0, Mobiliario: 0, Arte: 0, Electricidad: 0 };
 const DEPT_ABBR = { Audio: "AUD", Mobiliario: "MOB", Arte: "ART", Electricidad: "ELE" };
 // Genera y RESERVA el siguiente código para `dept`, verificando contra todos
 // los códigos existentes para que dos altas nunca puedan terminar con el
@@ -2544,23 +2547,9 @@ function peekNextCode(dept) {
   while (items.some(i => i.code === code)) { n++; code = `TE-${abbr}-${String(n).padStart(3,"0")}`; }
   return code;
 }
-const items = [
-  { id: nextId(), name: "Micrófono SM58", qty: 6, dept: "Audio", tag: "Micrófonos", code: "TE-AUD-001", desc: "Micrófono dinámico vocal, ideal para conciertos y presentaciones.", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Bocina activa 15\"", qty: 4, dept: "Audio", tag: "Bocinas", code: "TE-AUD-002", desc: "", photo: null, repair: 1, retired: 0 },
-  { id: nextId(), name: "Mezcladora Yamaha 12ch", qty: 2, dept: "Audio", tag: "Mezcladora", code: "TE-AUD-003", desc: "Consola de 12 canales con efectos integrados.", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Cable XLR 10m", qty: 18, dept: "Audio", tag: "Cables", code: "TE-AUD-004", desc: "", photo: null, repair: 0, retired: 2 },
-  { id: nextId(), name: "Cable canon-plug 5m", qty: 10, dept: "Audio", tag: "Cables", code: "TE-AUD-005", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Monitor de piso", qty: 4, dept: "Audio", tag: "Monitores", code: "TE-AUD-006", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Silla plegable", qty: 40, dept: "Mobiliario", tag: "Sillas", code: "TE-MOB-001", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Mesa plegable 1.8m", qty: 8, dept: "Mobiliario", tag: "Mesas", code: "TE-MOB-002", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Templete modular 2x1m", qty: 12, dept: "Mobiliario", tag: "Templetes", code: "TE-MOB-003", desc: "Piezas modulares para armar tarima de exposición.", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Caballete de madera", qty: 15, dept: "Arte", tag: "Caballetes", code: "TE-ART-001", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Marco flotante 60x80", qty: 9, dept: "Arte", tag: "Marcos", code: "TE-ART-002", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Riel de iluminación LED", qty: 6, dept: "Arte", tag: "Iluminación de exhibición", code: "TE-ART-003", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Extensión eléctrica 20m", qty: 14, dept: "Electricidad", tag: "Extensión eléctrica", code: "TE-ELE-001", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Multicontacto 6 salidas", qty: 20, dept: "Electricidad", tag: "Multicontactos", code: "TE-ELE-002", desc: "", photo: null, repair: 0, retired: 0 },
-  { id: nextId(), name: "Regulador de voltaje", qty: 5, dept: "Electricidad", tag: "Reguladores", code: "TE-ELE-003", desc: "", photo: null, repair: 0, retired: 0 }
-];
+// Arranca vacío a propósito: nada de inventario de ejemplo en la página
+// real. Se llena según el colectivo va dando de alta artículos.
+const items = [];
 
 /* ---------- Contabilidad de estados por artículo ---------- */
 function loanedQtyFor(itemId, excludeEventId) {
@@ -2571,47 +2560,13 @@ function availableQtyFor(item, excludeEventId) {
   return Math.max(0, item.qty - loanedQtyFor(item.id, excludeEventId) - (item.repair||0) - (item.retired||0));
 }
 
-/* ---------- Datos de ejemplo: eventos ---------- */
-const events = [
-  { id: nextId(), name: "Expo colectiva: Umbrales", desc: "Muestra de artistas emergentes del colectivo, técnica mixta.", date: "2026-08-22", timeStart: "18:00", timeEnd: "22:00", category: "Exposición", flyer: null, participants: [
-      { userId: users[1].id, role: "Organizador" }, { userId: users[3].id, role: "Fotografía" }, { userId: users[5].id, role: "Staff" }
-  ] },
-  { id: nextId(), name: "Noche acústica TE", desc: "Concierto acústico de bandas locales en el patio central.", date: "2026-08-29", timeStart: "19:00", timeEnd: "23:00", category: "Concierto", flyer: null, participants: [
-      { userId: users[2].id, role: "Audio" }, { userId: users[4].id, role: "Organizador" }
-  ] },
-  { id: nextId(), name: "Taller de serigrafía", desc: "Taller introductorio de serigrafía para nuevos miembros.", date: "2026-09-05", timeStart: "11:00", timeEnd: "14:00", category: "Taller", flyer: null, participants: [
-      { userId: users[1].id, role: "Artista" }, { userId: users[6].id, role: "Staff" }
-  ] },
-  { id: nextId(), name: "Bazar de otoño", desc: "Bazar de arte y diseño independiente con artistas invitados.", date: "2026-09-12", timeStart: "12:00", timeEnd: "20:00", category: "Bazar", flyer: null, participants: [
-      { userId: users[3].id, role: "Organizador" }, { userId: users[5].id, role: "Staff" }, { userId: users[4].id, role: "Fotografía" }
-  ] },
-  { id: nextId(), name: "Reunión de coordinación mensual", desc: "Revisión de pendientes y planeación del próximo trimestre.", date: "2026-08-25", timeStart: "17:00", timeEnd: "18:30", category: "Reunión interna", flyer: null, participants: [
-      { userId: users[0].id, role: "Organizador" }, { userId: users[1].id, role: "Staff" }, { userId: users[2].id, role: "Staff" }
-  ] },
-  { id: nextId(), name: "Expo: Fragmentos urbanos", desc: "Fotografía urbana y collage de autores locales.", date: "2026-07-18", timeStart: "18:00", timeEnd: "22:00", category: "Exposición", flyer: null, participants: [
-      { userId: users[3].id, role: "Fotografía" }, { userId: users[1].id, role: "Organizador" }
-  ] },
-  { id: nextId(), name: "Micrófono abierto", desc: "Sesión libre de poesía, música y spoken word.", date: "2026-09-19", timeStart: "19:00", timeEnd: "22:00", category: "Concierto", flyer: null, participants: [
-      { userId: users[2].id, role: "Audio" }, { userId: users[6].id, role: "Organizador" }
-  ] }
-];
+/* ---------- Eventos ----------
+   Arranca vacío a propósito: nada de eventos de ejemplo en la página real. */
+const events = [];
 
 /* ---------- Mochila: préstamos de equipo (artículo + cantidad, ligados o no a un evento) ---------- */
 function itemByName(name) { return items.find(i => i.name === name); }
-const loans = [
-  { id: nextId(), itemId: itemByName("Bocina activa 15\"").id, qty: 1, eventId: events[0].id, addedBy: users[1].id, addedAt: "2026-08-12T10:00:00" },
-  { id: nextId(), itemId: itemByName("Templete modular 2x1m").id, qty: 4, eventId: events[0].id, addedBy: users[1].id, addedAt: "2026-08-12T10:01:00" },
-  { id: nextId(), itemId: itemByName("Riel de iluminación LED").id, qty: 2, eventId: events[0].id, addedBy: users[1].id, addedAt: "2026-08-12T10:02:00" },
-  { id: nextId(), itemId: itemByName("Micrófono SM58").id, qty: 2, eventId: events[1].id, addedBy: users[4].id, addedAt: "2026-08-11T09:00:00" },
-  { id: nextId(), itemId: itemByName("Mezcladora Yamaha 12ch").id, qty: 1, eventId: events[1].id, addedBy: users[4].id, addedAt: "2026-08-11T09:01:00" },
-  { id: nextId(), itemId: itemByName("Monitor de piso").id, qty: 2, eventId: events[1].id, addedBy: users[4].id, addedAt: "2026-08-11T09:02:00" },
-  { id: nextId(), itemId: itemByName("Mesa plegable 1.8m").id, qty: 2, eventId: events[2].id, addedBy: users[1].id, addedAt: "2026-08-20T08:00:00" },
-  { id: nextId(), itemId: itemByName("Silla plegable").id, qty: 10, eventId: events[2].id, addedBy: users[1].id, addedAt: "2026-08-20T08:01:00" },
-  { id: nextId(), itemId: itemByName("Mesa plegable 1.8m").id, qty: 4, eventId: events[3].id, addedBy: users[3].id, addedAt: "2026-08-14T11:00:00" },
-  { id: nextId(), itemId: itemByName("Silla plegable").id, qty: 12, eventId: events[3].id, addedBy: users[3].id, addedAt: "2026-08-14T11:01:00" },
-  { id: nextId(), itemId: itemByName("Extensión eléctrica 20m").id, qty: 2, eventId: events[3].id, addedBy: users[3].id, addedAt: "2026-08-14T11:02:00" },
-  { id: nextId(), itemId: itemByName("Templete modular 2x1m").id, qty: 2, eventId: events[5].id, addedBy: users[3].id, addedAt: "2026-07-15T09:00:00" }
-];
+const loans = [];
 function loansForEvent(eventId) { return loans.filter(l => l.eventId === eventId); }
 function loansUnassigned() { return loans.filter(l => l.eventId === null); }
 function removeLoansForEvent(eventId) {
@@ -2631,40 +2586,13 @@ function diffFields(oldObj, newVals, labels) {
   return parts.join("; ");
 }
 
-/* ---------- Datos de ejemplo: movimientos de billetera ---------- */
-const wtx = [
-  { id: nextId(), type: "ingreso", name: "Venta de boletos — Fragmentos urbanos", desc: "Taquilla de la exposición de julio", amount: 4200, eventId: events[5].id, userId: users[0].id, date: "2026-07-18" },
-  { id: nextId(), type: "egreso", name: "Renta de proyector", desc: "Equipo audiovisual extra para la expo", amount: 850, eventId: events[5].id, userId: users[0].id, date: "2026-07-17", category: "Equipo y material" },
-  { id: nextId(), type: "ingreso", name: "Donativo de patrocinador", desc: "Apoyo de galería aliada", amount: 6000, eventId: null, userId: users[0].id, date: "2026-07-25" },
-  { id: nextId(), type: "egreso", name: "Insumos de serigrafía", desc: "Tintas, marcos y bastidores para el taller", amount: 1320, eventId: events[2].id, userId: users[0].id, date: "2026-08-02", category: "Equipo y material" },
-  { id: nextId(), type: "egreso", name: "Renta de bocinas extra", desc: "Refuerzo de audio para la noche acústica", amount: 1500, eventId: events[1].id, userId: users[0].id, date: "2026-08-10", category: "Equipo y material" },
-  { id: nextId(), type: "ingreso", name: "Cuotas de membresía — agosto", desc: "Aportación mensual de integrantes activos", amount: 2800, eventId: null, userId: users[0].id, date: "2026-08-05" },
-  { id: nextId(), type: "egreso", name: "Difusión en redes", desc: "Campaña pagada para la expo Umbrales", amount: 600, eventId: events[0].id, userId: users[0].id, date: "2026-08-12", category: "Difusión / marketing" },
-  { id: nextId(), type: "ingreso", name: "Venta de piezas — Umbrales", desc: "Comisión por venta de obra en la expo", amount: 5100, eventId: events[0].id, userId: users[0].id, date: "2026-08-22" },
-  { id: nextId(), type: "egreso", name: "Transporte de mobiliario", desc: "Flete para templetes y sillas", amount: 480, eventId: events[3].id, userId: users[0].id, date: "2026-08-14", category: "Transporte" },
-  { id: nextId(), type: "ingreso", name: "Preventa Bazar de otoño", desc: "Cuotas de participación de expositores", amount: 3600, eventId: events[3].id, userId: users[0].id, date: "2026-08-16" },
-  { id: nextId(), type: "egreso", name: "Alimentos para staff", desc: "Comida para el equipo durante montaje", amount: 720, eventId: events[0].id, userId: users[0].id, date: "2026-08-21", category: "Alimentos" },
-  { id: nextId(), type: "ingreso", name: "Cuotas de membresía — julio", desc: "Aportación mensual de integrantes activos", amount: 2600, eventId: null, userId: users[0].id, date: "2026-07-05" }
-];
+/* ---------- Movimientos de billetera ----------
+   Arranca vacío a propósito: nada de movimientos de ejemplo. */
+const wtx = [];
 
-/* ---------- Datos de ejemplo: historial de actividad ---------- */
-const activityLog = [
-  { id: nextId(), module: "inventario", text: `<b>Paloma Mora</b> agregó <b>"Riel de iluminación LED"</b> al inventario`, date: "2026-08-14T10:20:00" },
-  { id: nextId(), module: "calendario", text: `<b>Renata Solís</b> creó el evento <b>"Bazar de otoño"</b>`, date: "2026-08-13T09:05:00" },
-  { id: nextId(), module: "billetera", text: `<b>Renata Solís</b> registró un ingreso de <b>$3,600.00</b> (Preventa Bazar de otoño)`, date: "2026-08-16T15:40:00" },
-  { id: nextId(), module: "usuarios", text: `<b>Renata Solís</b> aprobó el registro de <b>Diego Cruz Pineda</b>`, date: "2026-08-11T12:00:00" },
-  { id: nextId(), module: "inventario", text: `<b>Carolina Reyes</b> actualizó las unidades de <b>"Cable XLR 10m"</b>`, date: "2026-08-10T17:15:00" },
-  { id: nextId(), module: "billetera", text: `<b>Renata Solís</b> registró un egreso de <b>$1,500.00</b> (Renta de bocinas extra)`, date: "2026-08-10T18:02:00" },
-  { id: nextId(), module: "calendario", text: `<b>Paloma Mora</b> agregó a <b>Iker Navarro</b> como Fotografía en "Expo colectiva: Umbrales"`, date: "2026-08-09T11:30:00" },
-  { id: nextId(), module: "inventario", text: `<b>Renata Solís</b> eliminó <b>"Cable RCA 3m"</b> del inventario`, date: "2026-08-06T09:50:00" },
-  { id: nextId(), module: "usuarios", text: `<b>Renata Solís</b> cambió el rol de <b>Fernanda Uribe</b> a Cooperador`, date: "2026-08-04T14:10:00" },
-  { id: nextId(), module: "calendario", text: `<b>Renata Solís</b> creó el evento <b>"Reunión de coordinación mensual"</b>`, date: "2026-08-03T08:45:00" },
-  { id: nextId(), module: "billetera", text: `<b>Renata Solís</b> registró un ingreso de <b>$2,800.00</b> (Cuotas de membresía — agosto)`, date: "2026-08-05T10:00:00" },
-  { id: nextId(), module: "inventario", text: `<b>Diego Cruz</b> agregó <b>"Regulador de voltaje"</b> al inventario`, date: "2026-07-30T16:20:00" },
-  { id: nextId(), module: "calendario", text: `<b>Paloma Mora</b> modificó el horario de "Taller de serigrafía"`, date: "2026-07-28T13:00:00" },
-  { id: nextId(), module: "usuarios", text: `<b>Renata Solís</b> aprobó el registro de <b>Santiago Lomelí</b>`, date: "2026-06-01T09:00:00" },
-  { id: nextId(), module: "billetera", text: `<b>Renata Solís</b> registró un egreso de <b>$850.00</b> (Renta de proyector)`, date: "2026-07-17T19:00:00" }
-];
+/* ---------- Historial de actividad ----------
+   Arranca vacío a propósito: nada de historial de ejemplo. */
+const activityLog = [];
 function logActivity(module, html) {
   activityLog.unshift({ id: nextId(), module, text: html, date: new Date().toISOString() });
 }
@@ -2810,11 +2738,18 @@ function withLoading(btnId, action, ms) {
   btn.classList.add("is-loading");
   btn.setAttribute("aria-label", "Procesando…");
   btn.innerHTML = loaderSVG();
+  const reset = () => {
+    if (document.body.contains(btn)) { btn.innerHTML = original; btn.classList.remove("is-loading"); btn.removeAttribute("aria-label"); }
+  };
   setTimeout(() => {
-    try { action(); }
-    finally {
-      if (document.body.contains(btn)) { btn.innerHTML = original; btn.classList.remove("is-loading"); btn.removeAttribute("aria-label"); }
-    }
+    let result;
+    try { result = action(); }
+    catch (e) { reset(); throw e; }
+    // `action` puede ser async (login, registro, y todo lo que ya habla
+    // con Firebase): en ese caso no se quita el estado de "cargando"
+    // hasta que la operación real termine, no solo tras `ms`.
+    if (result && typeof result.then === "function") result.then(reset, reset);
+    else reset();
   }, ms || 550);
 }
 
@@ -2854,18 +2789,178 @@ function can(action, module) {
   return false;
 }
 
-/* ================= LOGIN ================= */
-document.getElementById("login-user").addEventListener("input", (e) => {
-  const u = users.find(u => u.username === e.target.value.trim().toLowerCase());
-  const preview = document.getElementById("login-user-preview");
-  if (u) {
-    document.getElementById("login-user-avatar").outerHTML = avatarHTML(u, 40).replace('class="avatar"','class="avatar" id="login-user-avatar"');
-    document.getElementById("login-user-name").textContent = u.fullName;
-    document.getElementById("login-user-role").textContent = ROLES[u.role].label;
-    preview.classList.add("show");
-  } else {
-    preview.classList.remove("show");
+/* ================= FIREBASE: SESIÓN Y PERFIL =================
+   Este bloque conecta el login/registro/cierre de sesión con Firebase
+   Authentication y Firestore de verdad. Por dentro cada nombre de
+   usuario se convierte en un correo inventado (ver ARQUITECTURA-
+   FIREBASE.md) que nadie ve ni usa para nada más. */
+
+function synthEmailFor(username) {
+  return username + "@tercer-espacio.local";
+}
+
+function mapFirebaseAuthError(err) {
+  switch (err && err.code) {
+    case "auth/invalid-credential":
+    case "auth/invalid-login-credentials":
+    case "auth/user-not-found":
+    case "auth/wrong-password":
+      return "Usuario o contraseña incorrectos.";
+    case "auth/too-many-requests":
+      return "Demasiados intentos. Espera un momento y vuelve a intentar.";
+    case "auth/network-request-failed":
+      return "No se pudo conectar con el servidor. Revisa tu conexión a internet.";
+    case "auth/user-disabled":
+      return "Esta cuenta fue deshabilitada. Contacta a un administrador.";
+    default:
+      return "Ocurrió un error al iniciar sesión. Intenta de nuevo.";
   }
+}
+
+// Convierte el documento crudo de Firestore (users/{uid}) al formato que
+// ya espera el resto del sistema (que siempre usó `id` como campo).
+function mapUserDoc(uid, data) {
+  return Object.assign({ id: uid }, data);
+}
+
+let myProfile = null;
+// Evita que onAuthStateChanged reaccione a medio camino de un login/
+// registro que todavía está armando el perfil en Firestore (ver
+// handleRegister). Sin esto, el listener podría dispararse ANTES de que
+// exista el documento users/{uid} y cerrarle la sesión a alguien que
+// apenas se está registrando.
+let suppressAuthHandler = false;
+let unsubUsers = null, unsubPasswordResets = null;
+
+function detachAllFirestoreListeners() {
+  if (unsubUsers) { unsubUsers(); unsubUsers = null; }
+  if (unsubPasswordResets) { unsubPasswordResets(); unsubPasswordResets = null; }
+  users = [];
+  pendingUsers = [];
+  passwordResetRequests.length = 0;
+}
+
+// Mantiene `users`/`pendingUsers` reflejando en vivo la colección
+// `users` de Firestore, para que el resto del sistema (renderUsers,
+// findUser, etc.) siga funcionando sin cambios, como si fuera un
+// arreglo normal. Solo se activa DESPUÉS de iniciar sesión: las reglas
+// de seguridad no dejan leer esta colección antes.
+function attachUsersListener() {
+  if (unsubUsers) return;
+  unsubUsers = db.collection("users").onSnapshot((snap) => {
+    const all = [], pending = [];
+    snap.forEach((doc) => {
+      const u = mapUserDoc(doc.id, doc.data());
+      all.push(u);
+      if (u.status === "pendiente") pending.push(u);
+    });
+    users = all;
+    pendingUsers = pending;
+
+    // Si mi propio perfil cambió (un admin me cambió el rol, o cerró mi
+    // sesión remotamente desde Usuarios), reacciona de inmediato.
+    const mine = myProfile ? all.find(u => u.id === myProfile.id) : null;
+    if (mine) {
+      myProfile = mine;
+      if (mine.sessionValid === false) { handleLogout(); return; }
+    }
+    refreshPendingBadge();
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando usuarios:", err));
+}
+
+function attachPasswordResetListener() {
+  if (unsubPasswordResets) return;
+  unsubPasswordResets = db.collection("passwordResetRequests").onSnapshot((snap) => {
+    passwordResetRequests.length = 0;
+    snap.forEach((doc) => passwordResetRequests.push(Object.assign({ id: doc.id }, doc.data())));
+    refreshPendingBadge();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando solicitudes de contraseña:", err));
+}
+
+async function enterAppAsUser(uid, data) {
+  myProfile = mapUserDoc(uid, data);
+  state.currentUserId = uid;
+  // Si vuelve a iniciar sesión normalmente después de que un admin le
+  // cerrara la sesión remotamente, se reactiva sola.
+  if (data.sessionValid === false) {
+    try { await db.collection("users").doc(uid).update({ sessionValid: true }); myProfile.sessionValid = true; }
+    catch (e) { console.error(e); }
+  }
+  attachUsersListener();
+  attachPasswordResetListener();
+  bootApp();
+}
+
+// Se dispara con cada cambio de sesión: al iniciar sesión, al cerrarla,
+// y una vez sola al cargar la página si el navegador ya tenía una
+// sesión guardada (así no hay que volver a escribir usuario/contraseña
+// cada vez que se recarga).
+if (firebaseReady) {
+  auth.onAuthStateChanged(async (fbUser) => {
+    if (suppressAuthHandler) return;
+    if (!fbUser) {
+      myProfile = null;
+      detachAllFirestoreListeners();
+      return;
+    }
+    let snap;
+    try {
+      snap = await db.collection("users").doc(fbUser.uid).get();
+    } catch (e) {
+      console.error("[Tercer Espacio] No se pudo leer tu perfil:", e);
+      document.getElementById("login-error-text").textContent = "No se pudo conectar con el servidor. Revisa tu conexión a internet.";
+      document.getElementById("login-error").classList.remove("hidden");
+      auth.signOut().catch(() => {});
+      return;
+    }
+    if (!snap.exists) {
+      document.getElementById("login-error-text").textContent = "No se encontró tu perfil. Contacta a un administrador.";
+      document.getElementById("login-error").classList.remove("hidden");
+      auth.signOut().catch(() => {});
+      return;
+    }
+    const data = snap.data();
+    if (data.status !== "activo") {
+      document.getElementById("login-error-text").textContent = "Tu cuenta está pendiente de aprobación. Un administrador la revisará pronto.";
+      document.getElementById("login-error").classList.remove("hidden");
+      auth.signOut().catch(() => {});
+      return;
+    }
+    await enterAppAsUser(fbUser.uid, data);
+  });
+}
+
+/* ================= LOGIN ================= */
+/* La vista previa (avatar/nombre/rol) mientras se escribe el usuario ya no
+   puede leer el arreglo local `users` (empieza vacío hasta iniciar
+   sesión) — consulta el directorio público `usernames/{username}` en
+   Firestore, con una pequeña espera (debounce) para no mandar una
+   consulta por cada tecla, y un número de secuencia para ignorar
+   respuestas que ya llegaron tarde. */
+let loginPreviewTimer = null, loginPreviewSeq = 0;
+document.getElementById("login-user").addEventListener("input", (e) => {
+  const uname = e.target.value.trim().toLowerCase();
+  const preview = document.getElementById("login-user-preview");
+  clearTimeout(loginPreviewTimer);
+  if (!uname || !firebaseReady) { preview.classList.remove("show"); return; }
+  const seq = ++loginPreviewSeq;
+  loginPreviewTimer = setTimeout(async () => {
+    let data = null;
+    try {
+      const snap = await db.collection("usernames").doc(uname).get();
+      if (snap.exists) data = snap.data();
+    } catch (err) { /* sin conexión o similar: simplemente no se muestra la vista previa */ }
+    if (seq !== loginPreviewSeq) return; // ya se escribió algo más; esta respuesta llegó tarde
+    if (data && data.role) {
+      document.getElementById("login-user-avatar").outerHTML = avatarHTML({ fullName: data.fullName, photo: data.photo }, 40).replace('class="avatar"','class="avatar" id="login-user-avatar"');
+      document.getElementById("login-user-name").textContent = data.fullName;
+      document.getElementById("login-user-role").textContent = ROLES[data.role].label;
+      preview.classList.add("show");
+    } else {
+      preview.classList.remove("show");
+    }
+  }, 250);
 });
 document.getElementById("login-pass-toggle").addEventListener("click", () => togglePass("login-pass", document.getElementById("login-pass-toggle")));
 function togglePass(inputId, btn) {
@@ -2876,49 +2971,46 @@ function togglePass(inputId, btn) {
     ? `<svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M3 3l18 18M10.6 10.7a2.8 2.8 0 0 0 3.9 3.9M7.4 7.5C4.8 9 3 12 3 12s3.5 7 10 7c1.9 0 3.5-.5 4.8-1.3M15.5 6.2A10.6 10.6 0 0 0 12 5.5C5.5 5.5 2 12 2 12a15 15 0 0 0 3.2 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`
     : `<svg width="19" height="19" viewBox="0 0 24 24" fill="none"><path d="M1.5 12S5 5 12 5s10.5 7 10.5 7-3.5 7-10.5 7S1.5 12 1.5 12Z" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="12" r="3.2" stroke="currentColor" stroke-width="1.7"/></svg>`;
 }
-function handleLogin() {
+let loginInFlight = false;
+async function handleLogin() {
   const uname = document.getElementById("login-user").value.trim().toLowerCase();
   const pass = document.getElementById("login-pass").value;
   const errBox = document.getElementById("login-error");
-  const isPending = pendingUsers.find(p => p.username === uname);
-  if (isPending) {
-    document.getElementById("login-error-text").textContent = "Tu solicitud aún está pendiente de aprobación por un administrador.";
-    errBox.classList.remove("hidden");
-    return;
-  }
-  const u = users.find(u => u.username === uname && u.password === pass);
-  if (!u) {
-    document.getElementById("login-error-text").textContent = "Usuario o contraseña incorrectos.";
-    errBox.classList.remove("hidden");
-    return;
-  }
   errBox.classList.add("hidden");
-  if (maintenanceMode && u.role !== "admin") {
-    document.getElementById("maintenance-msg-text").textContent = maintenanceMessage;
-    document.getElementById("maintenance-screen").classList.remove("hidden");
+  if (!uname || !pass) {
+    document.getElementById("login-error-text").textContent = "Escribe tu usuario y tu contraseña.";
+    errBox.classList.remove("hidden");
     return;
   }
-  u.sessionValid = true;
-  state.currentUserId = u.id;
-  state.previewRole = u.role;
-  bootApp();
-}
-/* ---------- Verificador "en vivo" de sesión ----------
-   En un backend real esto sería un socket o un push silencioso; aquí lo
-   simulamos con un sondeo corto para que un cierre de sesión remoto (ver
-   forceLogoutUser) surta efecto sin que la persona afectada tenga que
-   recargar o volver a intentar iniciar sesión. */
-const SESSION_CHECK_INTERVAL_MS = 3000;
-setInterval(() => {
-  if (state.currentUserId == null) return;
-  const u = currentUser();
-  if (u && u.sessionValid === false) {
-    handleLogout();
-    toast("Tu sesión fue cerrada de forma remota por un administrador.", "bad");
+  if (!firebaseReady) {
+    document.getElementById("login-error-text").textContent = "No se pudo conectar con el servidor. Revisa tu conexión a internet.";
+    errBox.classList.remove("hidden");
+    return;
   }
-}, SESSION_CHECK_INTERVAL_MS);
+  if (loginInFlight) return;
+  loginInFlight = true;
+  try {
+    await auth.signInWithEmailAndPassword(synthEmailFor(uname), pass);
+    // A partir de aquí, onAuthStateChanged hace el resto: revisa si la
+    // cuenta está pendiente de aprobación, si hay modo mantenimiento, y
+    // finalmente abre la app (ver bloque FIREBASE: SESIÓN Y PERFIL).
+  } catch (err) {
+    document.getElementById("login-error-text").textContent = mapFirebaseAuthError(err);
+    errBox.classList.remove("hidden");
+  } finally {
+    loginInFlight = false;
+  }
+}
+/* ---------- Cierre de sesión ----------
+   El cierre de sesión REMOTO (cuando un admin cierra la sesión de otra
+   persona) ya no depende de un sondeo cada pocos segundos: llega en
+   tiempo real por el listener de Firestore (ver attachUsersListener más
+   abajo), que llama a handleLogout() en cuanto detecta el cambio. */
 function handleLogout() {
+  auth.signOut().catch(() => {});
   state.currentUserId = null;
+  myProfile = null;
+  detachAllFirestoreListeners();
   closeSidebar();
   document.body.classList.remove("app-active");
   document.getElementById("app-shell").classList.add("hidden");
@@ -2963,14 +3055,26 @@ document.getElementById("reg-username").addEventListener("input", (e) => {
   e.target.value = e.target.value.toLowerCase().replace(/[^a-z0-9]/g, "");
   validateUsername();
 });
-function validateUsername() {
+// Ya no puede revisar el arreglo local `users`/`pendingUsers` (vacíos
+// hasta iniciar sesión): consulta directo el directorio público
+// `usernames/{username}` en Firestore. Por eso ahora es asíncrona — el
+// listener de arriba simplemente no espera su resultado (lo aplica en
+// cuanto llega), y handleRegister() sí lo espera con `await`.
+let usernameCheckSeq = 0;
+async function validateUsername() {
   const val = document.getElementById("reg-username").value;
   const icon = document.getElementById("reg-username-icon");
   const msg = document.getElementById("reg-username-msg");
   const input = document.getElementById("reg-username");
   input.classList.remove("is-valid","is-invalid");
   if (!val) { icon.innerHTML = ""; msg.innerHTML = ""; msg.className = "field-msg"; return false; }
-  const taken = users.some(u => u.username === val) || pendingUsers.some(u => u.username === val);
+  const seq = ++usernameCheckSeq;
+  let taken = true; // si no se puede confirmar, no se deja avanzar (más seguro que lo contrario)
+  try {
+    const snap = await db.collection("usernames").doc(val).get();
+    taken = snap.exists;
+  } catch (e) { console.error("[Tercer Espacio] No se pudo verificar el nombre de usuario:", e); }
+  if (seq !== usernameCheckSeq) return false; // ya se escribió algo más
   if (taken) {
     icon.innerHTML = crossIcon("#d03b3b");
     msg.className = "field-msg bad"; msg.innerHTML = "Ese nombre de usuario ya está en uso.";
@@ -3033,11 +3137,12 @@ document.getElementById("reg-pass2").addEventListener("input", () => {
 });
 document.getElementById("reg-phone").addEventListener("input", (e) => { e.target.value = e.target.value.replace(/[^0-9]/g,"").slice(0,10); });
 
-function handleRegister() {
+async function handleRegister() {
   const fullName = document.getElementById("reg-fullname").value.trim();
   const username = document.getElementById("reg-username").value.trim();
   const phone = document.getElementById("reg-phone").value.trim();
-  const validUser = validateUsername();
+  const password = document.getElementById("reg-pass1").value;
+  const validUser = await validateUsername();
   const validPass = validatePassword();
   const validConfirm = validateConfirm();
 
@@ -3046,22 +3151,88 @@ function handleRegister() {
   if (!validPass) return toast("Tu contraseña no cumple los requisitos.", "bad");
   if (!validConfirm) return toast("Las contraseñas no coinciden.", "bad");
   if (phone.length !== 10) return toast("Ingresa un número de teléfono a 10 dígitos.", "bad");
+  if (!firebaseReady) return toast("No se pudo conectar con el servidor. Revisa tu conexión a internet.", "bad");
 
-  pendingUsers.push({
-    id: nextId(), fullName, username, password: document.getElementById("reg-pass1").value,
-    phone, photo: regPhotoData, requestedAt: new Date().toISOString().slice(0,10)
-  });
+  suppressAuthHandler = true; // ver nota junto a onAuthStateChanged
+  let cred;
+  try {
+    cred = await auth.createUserWithEmailAndPassword(synthEmailFor(username), password);
+  } catch (err) {
+    suppressAuthHandler = false;
+    if (err.code === "auth/email-already-in-use") toast("Ese nombre de usuario ya está en uso.", "bad");
+    else if (err.code === "auth/weak-password") toast("Tu contraseña es demasiado débil.", "bad");
+    else { console.error(err); toast("No se pudo crear tu cuenta. Intenta de nuevo.", "bad"); }
+    return;
+  }
+  const uid = cred.user.uid;
 
-  document.getElementById("register-form-block").classList.add("hidden");
-  document.getElementById("register-switch-back").classList.add("hidden");
-  document.getElementById("register-success-block").classList.remove("hidden");
+  // ¿Ya existe un Administrador en el colectivo? Si no, esta cuenta se
+  // vuelve la primera automáticamente (ver "El primer Administrador" en
+  // ARQUITECTURA-FIREBASE.md). Si no se puede confirmar (sin conexión,
+  // etc.) se asume que sí existe: más seguro pedir revisión de más que
+  // dejar pasar un admin de más.
+  let bootstrap = false;
+  try {
+    const settingsSnap = await db.collection("settings").doc("app").get();
+    bootstrap = !settingsSnap.exists || settingsSnap.data().adminBootstrapped !== true;
+  } catch (e) { console.error("[Tercer Espacio] No se pudo revisar si ya hay administrador:", e); }
 
-  // reset form for next time
+  const baseProfile = {
+    fullName, username, phone, photo: regPhotoData || null,
+    since: new Date().toISOString().slice(0,10), coopPerms: null, sessionValid: true
+  };
+  async function writeProfile(asBootstrapAdmin) {
+    const profile = Object.assign({}, baseProfile, asBootstrapAdmin ? { role: "admin", status: "activo" } : { status: "pendiente" });
+    const dirEntry = { uid, fullName, photo: regPhotoData || null, status: profile.status };
+    if (asBootstrapAdmin) dirEntry.role = "admin";
+    const batch = db.batch();
+    batch.set(db.collection("users").doc(uid), profile);
+    batch.set(db.collection("usernames").doc(username), dirEntry);
+    if (asBootstrapAdmin) batch.set(db.collection("settings").doc("app"), { adminBootstrapped: true }, { merge: true });
+    await batch.commit();
+    return profile;
+  }
+
+  let finalProfile;
+  try {
+    try {
+      finalProfile = await writeProfile(bootstrap);
+    } catch (e) {
+      if (!bootstrap) throw e;
+      // Alguien más ganó la carrera de "primer administrador" justo en
+      // este instante: se reintenta una sola vez como solicitud normal.
+      console.error("[Tercer Espacio] Reintentando registro como pendiente:", e);
+      finalProfile = await writeProfile(false);
+    }
+  } catch (e) {
+    console.error("[Tercer Espacio] No se pudo completar el registro, se revierte la cuenta:", e);
+    try { await cred.user.delete(); } catch (e2) { console.error(e2); }
+    suppressAuthHandler = false;
+    toast("No se pudo completar tu registro. Intenta de nuevo.", "bad");
+    return;
+  }
+
   ["reg-fullname","reg-username","reg-pass1","reg-pass2","reg-phone"].forEach(id => document.getElementById(id).value = "");
   regPhotoData = null;
   document.getElementById("reg-photo-preview").classList.add("hidden");
   document.getElementById("reg-username-icon").innerHTML = "";
   document.getElementById("reg-username-msg").innerHTML = "";
+
+  if (finalProfile.status === "activo") {
+    // Es la primera cuenta del colectivo: entra directo a la app, no
+    // tiene sentido pedirle que espere la aprobación de un admin que
+    // todavía no existía.
+    suppressAuthHandler = false;
+    toast(`¡Listo, ${fullName.split(" ")[0]}! Tu cuenta se creó como la primera cuenta Administrador del sistema.`, "good");
+    await enterAppAsUser(uid, finalProfile);
+    return;
+  }
+
+  try { await auth.signOut(); } catch (e) {}
+  suppressAuthHandler = false;
+  document.getElementById("register-form-block").classList.add("hidden");
+  document.getElementById("register-switch-back").classList.add("hidden");
+  document.getElementById("register-success-block").classList.remove("hidden");
 }
 
 /* ================= BOOT DE LA APP ================= */
@@ -3171,14 +3342,14 @@ function openNotifPanel() {
 }
 
 /* ================= HOME / RESUMEN ================= */
-const FUNDS_SEED = 5000; // saldo inicial registrado antes del historial visible
+const FUNDS_SEED = 0; // saldo inicial antes del primer movimiento registrado (nada de ejemplo)
 function currentFunds() {
   return FUNDS_SEED + wtx.reduce((sum, t) => sum + (t.type === "ingreso" ? t.amount : -t.amount), 0);
 }
 function balanceSeries() {
   const sorted = [...wtx].sort((a,b) => a.date.localeCompare(b.date));
   let running = FUNDS_SEED;
-  const points = [{ date: "2026-07-01", balance: running }];
+  const points = [{ date: "2026-08-18", balance: running }];
   sorted.forEach(t => { running += t.type === "ingreso" ? t.amount : -t.amount; points.push({ date: t.date, balance: running }); });
   return points;
 }
@@ -3697,7 +3868,7 @@ function renderParticipantPicker(forceOpen) {
   const dd = document.getElementById("participant-picker-dd");
   if (matches.length === 0 && !forceOpen && q==="") { dd.classList.remove("open"); return; }
   dd.innerHTML = matches.length ? matches.map(u => `
-    <div class="pp-opt" onclick="addParticipant(${u.id})">${avatarHTML(u,26)}<div><b style="font-size:13px;display:block;">${escapeHtml(u.fullName)}</b><span style="font-size:11px;color:var(--ink-muted);">${ROLES[u.role].label}</span></div></div>`).join("")
+    <div class="pp-opt" onclick="addParticipant('${u.id}')">${avatarHTML(u,26)}<div><b style="font-size:13px;display:block;">${escapeHtml(u.fullName)}</b><span style="font-size:11px;color:var(--ink-muted);">${ROLES[u.role].label}</span></div></div>`).join("")
     : `<div class="pp-opt text-muted" style="cursor:default;">Sin resultados</div>`;
   dd.classList.add("open");
 }
@@ -3722,11 +3893,11 @@ function renderParticipantsList() {
       ${avatarHTML(u, 30)}
       <b style="flex:1;">${escapeHtml(u.fullName)}</b>
       <div class="select-wrap">
-        <select class="role-tag-select" onchange="setParticipantRole(${u.id}, this.value)">
+        <select class="role-tag-select" onchange="setParticipantRole('${u.id}', this.value)">
           ${PARTICIPANT_ROLES.map(r => `<option value="${r}" ${r===p.role?'selected':''}>${r}</option>`).join("")}
         </select>
       </div>
-      <button class="btn-icon btn-sm" onclick="removeParticipant(${u.id})" title="Quitar">✕</button>
+      <button class="btn-icon btn-sm" onclick="removeParticipant('${u.id}')" title="Quitar">✕</button>
     </div>`;
   }).join("") : `<p class="text-muted" style="font-size:12.5px;">Aún no agregas participantes.</p>`;
 }
@@ -4009,8 +4180,8 @@ function renderUsers() {
             ${ACCEPT_ROLE_OPTIONS.map(r => `<option value="${r}" ${r==="lector"?"selected":""}>${ROLES[r].label}</option>`).join("")}
           </select>
         </div>
-        <button class="btn btn-secondary btn-sm" onclick="rejectPending(${p.id})">Rechazar</button>
-        <button class="btn btn-primary btn-sm" onclick="acceptPending(${p.id})">Aceptar registro</button>
+        <button class="btn btn-secondary btn-sm" onclick="rejectPending('${p.id}')">Rechazar</button>
+        <button class="btn btn-primary btn-sm" onclick="acceptPending('${p.id}')">Aceptar registro</button>
         ` : `<span class="text-muted" style="font-size:12px;">Solo un Administrador puede revisar esta solicitud.</span>`}
       </div>
     </div>`).join("");
@@ -4026,8 +4197,8 @@ function renderUsers() {
       <div><b>${escapeHtml(u.fullName)}</b><div class="pr-meta">@${u.username} · olvidó su contraseña · ${relTime(r.requestedAt)}</div></div>
       <div class="pr-actions">
         ${admin ? `
-        <button class="btn btn-secondary btn-sm" onclick="discardPasswordReset(${r.id})">Descartar</button>
-        <button class="btn btn-primary btn-sm" onclick="generateTempPassword(${r.id})">Generar temporal</button>
+        <button class="btn btn-secondary btn-sm" onclick="discardPasswordReset('${r.id}')">Descartar</button>
+        <button class="btn btn-primary btn-sm" onclick="generateTempPassword('${r.id}')">Generar temporal</button>
         ` : `<span class="text-muted" style="font-size:12px;">Solo un Administrador puede revisar esta solicitud.</span>`}
       </div>
     </div>`;
@@ -4049,7 +4220,7 @@ function renderUsers() {
       <td data-label="Rol">
         <div class="flex items-center gap-1">
           <div class="select-wrap">
-            <select class="input role-select ${ROLES[u.role].badgeClass}" style="border-color:transparent;" ${(isOnlyAdmin||!admin)?'disabled':''} title="${isOnlyAdmin?'Solo puede haber un administrador':(!admin?'Solo un Administrador puede cambiar roles':'')}" onchange="changeUserRole(${u.id}, this.value)">
+            <select class="input role-select ${ROLES[u.role].badgeClass}" style="border-color:transparent;" ${(isOnlyAdmin||!admin)?'disabled':''} title="${isOnlyAdmin?'Solo puede haber un administrador':(!admin?'Solo un Administrador puede cambiar roles':'')}" onchange="changeUserRole('${u.id}', this.value)">
               ${["editor","cooperador","lector"].map(r => `<option value="${r}" ${u.role===r?'selected':''}>${ROLES[r].label}</option>`).join("")}
               ${isOnlyAdmin ? `<option value="admin" selected>Administrador</option>` : ""}
             </select>
@@ -4065,47 +4236,54 @@ function renderUsers() {
       </td>
       <td data-label="Acciones">
         <div class="row-actions">
-          <button class="btn-icon" title="Editar" onclick="openEditUser(${u.id})"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
-          ${(admin && !isSelf && u.sessionValid !== false) ? `<button class="btn-icon" title="Cerrar sesión remota" onclick="forceLogoutUser(${u.id})"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3M16 17l5-5-5-5M21 12H9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : ""}
+          <button class="btn-icon" title="Editar" onclick="openEditUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
+          ${(admin && !isSelf && u.sessionValid !== false) ? `<button class="btn-icon" title="Cerrar sesión remota" onclick="forceLogoutUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3M16 17l5-5-5-5M21 12H9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : ""}
           ${(isOnlyAdmin || !admin) ? "" : (u.protected
             ? `<button class="btn-icon" disabled title="Este perfil está protegido y no se puede eliminar" style="opacity:.45; cursor:not-allowed;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>`
-            : `<button class="btn-icon" title="Eliminar" onclick="confirmDeleteUser(${u.id})"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m2 0v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7h12Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>`
+            : `<button class="btn-icon" title="Eliminar" onclick="confirmDeleteUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m2 0v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7h12Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>`
           )}
         </div>
       </td>
     </tr>`;
   }).join("");
 }
-function acceptPending(id) {
+async function acceptPending(id) {
   if (!requireAdmin("aceptar solicitudes de registro")) return;
   const p = pendingUsers.find(p => p.id === id);
+  if (!p) return;
   const roleSel = document.getElementById("pending-role-" + id);
   const role = roleSel ? roleSel.value : "lector";
-  users.push({ id: p.id, fullName: p.fullName, username: p.username, password: p.password, phone: p.phone, role, status: "activo", photo: p.photo, since: "2026-08-18", sessionValid: true });
-  pendingUsers.splice(pendingUsers.findIndex(x=>x.id===id), 1);
-  logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> aprobó el registro de <b>${escapeHtml(p.fullName)}</b> como ${ROLES[role].label}`);
-  renderUsers();
-  toast(`${p.fullName} fue aceptado como ${ROLES[role].label}.`, "good");
+  try {
+    await db.collection("users").doc(id).update({ role, status: "activo" });
+    await db.collection("usernames").doc(p.username).update({ role, status: "activo" });
+    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> aprobó el registro de <b>${escapeHtml(p.fullName)}</b> como ${ROLES[role].label}`);
+    toast(`${p.fullName} fue aceptado como ${ROLES[role].label}.`, "good");
+  } catch (e) { console.error(e); toast("No se pudo aceptar el registro. Intenta de nuevo.", "bad"); }
 }
-function rejectPending(id) {
+async function rejectPending(id) {
   if (!requireAdmin("rechazar solicitudes de registro")) return;
   const p = pendingUsers.find(p => p.id === id);
-  pendingUsers.splice(pendingUsers.findIndex(x=>x.id===id), 1);
-  renderUsers();
-  toast(`Solicitud de ${p.fullName} rechazada.`, "bad");
+  if (!p) return;
+  try {
+    await db.collection("users").doc(id).delete();
+    await db.collection("usernames").doc(p.username).delete();
+    toast(`Solicitud de ${p.fullName} rechazada.`, "bad");
+  } catch (e) { console.error(e); toast("No se pudo rechazar la solicitud. Intenta de nuevo.", "bad"); }
 }
-function changeUserRole(id, role) {
+async function changeUserRole(id, role) {
   if (!requireAdmin("cambiar el rol de un integrante")) { renderUsers(); return; }
   const u = findUser(id);
   const prevRole = u.role;
-  u.role = role;
-  if (prevRole !== role) {
-    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cambió el rol de <b>${escapeHtml(u.fullName)}</b> de <b>${ROLES[prevRole].label}</b> a <b>${ROLES[role].label}</b>`);
-  }
-  renderUsers();
-  toast(`${u.fullName} ahora es ${ROLES[role].label}.`, "good");
+  try {
+    await db.collection("users").doc(id).update({ role });
+    await db.collection("usernames").doc(u.username).update({ role });
+    if (prevRole !== role) {
+      logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cambió el rol de <b>${escapeHtml(u.fullName)}</b> de <b>${ROLES[prevRole].label}</b> a <b>${ROLES[role].label}</b>`);
+    }
+    toast(`${u.fullName} ahora es ${ROLES[role].label}.`, "good");
+  } catch (e) { console.error(e); toast("No se pudo cambiar el rol. Intenta de nuevo.", "bad"); renderUsers(); }
 }
-function updateCoopPerms() {
+async function updateCoopPerms() {
   if (!requireAdmin("cambiar los permisos de Cooperador")) { renderUsers(); return; }
   const prev = { ...state.coopPerms };
   const next = {
@@ -4120,6 +4298,8 @@ function updateCoopPerms() {
     { invEdit: "editar inventario", invDelete: "eliminar en inventario", calEdit: "editar calendario", calDelete: "eliminar en calendario" }
   );
   state.coopPerms = next;
+  try { await db.collection("settings").doc("app").set({ coopPerms: next }, { merge: true }); }
+  catch (e) { console.error("[Tercer Espacio] No se pudieron guardar los permisos generales:", e); }
   if (diff) logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cambió los permisos generales de Cooperador: ${diff}`);
   toast("Permisos generales de Cooperador actualizados.", "good");
 }
@@ -4142,23 +4322,22 @@ function openEditUser(id) {
   openModal("modal-edit-user");
 }
 function resetUserCoopPerms() {
-  const u = findUser(Number(document.getElementById("edit-user-id").value));
-  delete u.coopPerms;
+  const u = findUser(document.getElementById("edit-user-id").value);
   const perms = state.coopPerms;
   document.getElementById("edit-perm-inv-edit").checked = perms.invEdit;
   document.getElementById("edit-perm-inv-delete").checked = perms.invDelete;
   document.getElementById("edit-perm-cal-edit").checked = perms.calEdit;
   document.getElementById("edit-perm-cal-delete").checked = perms.calDelete;
-  toast(`Se restablecieron los permisos generales para ${u.fullName}.`, "good");
+  toast(`Se restablecieron los permisos generales para ${u.fullName}. Guarda para confirmar.`, "good");
 }
-function saveUserEdit() {
-  const u = findUser(Number(document.getElementById("edit-user-id").value));
+async function saveUserEdit() {
+  const id = document.getElementById("edit-user-id").value;
+  const u = findUser(id);
   const before = { fullName: u.fullName, phone: u.phone };
   const newName = document.getElementById("edit-user-name").value.trim() || u.fullName;
   const newPhone = document.getElementById("edit-user-phone").value.trim() || u.phone;
   const fieldsDiff = diffFields(before, { fullName: newName, phone: newPhone }, { fullName: "nombre", phone: "teléfono" });
-  u.fullName = newName;
-  u.phone = newPhone;
+  const updates = { fullName: newName, phone: newPhone };
   let permsDiff = "";
   if (u.role === "cooperador" && isAdminPreview() && !document.getElementById("edit-user-coop-perms").classList.contains("hidden")) {
     const prevPerms = u.coopPerms || state.coopPerms;
@@ -4173,48 +4352,50 @@ function saveUserEdit() {
       { invEdit: nextPerms.invEdit ? "sí" : "no", invDelete: nextPerms.invDelete ? "sí" : "no", calEdit: nextPerms.calEdit ? "sí" : "no", calDelete: nextPerms.calDelete ? "sí" : "no" },
       { invEdit: "editar inventario", invDelete: "eliminar en inventario", calEdit: "editar calendario", calDelete: "eliminar en calendario" }
     );
-    u.coopPerms = nextPerms;
+    updates.coopPerms = nextPerms;
   }
-  const allDiff = [fieldsDiff, permsDiff].filter(Boolean).join("; ");
-  if (allDiff) logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> editó a <b>${escapeHtml(u.fullName)}</b>: ${allDiff}`);
-  closeModal("modal-edit-user");
-  renderUsers();
-  if (u.id === currentUser().id) bootApp();
-  toast("Información actualizada.", "good");
+  try {
+    await db.collection("users").doc(id).update(updates);
+    if (newName !== u.fullName) await db.collection("usernames").doc(u.username).update({ fullName: newName });
+    const allDiff = [fieldsDiff, permsDiff].filter(Boolean).join("; ");
+    if (allDiff) logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> editó a <b>${escapeHtml(u.fullName)}</b>: ${allDiff}`);
+    closeModal("modal-edit-user");
+    toast("Información actualizada.", "good");
+  } catch (e) { console.error(e); toast("No se pudo guardar. Intenta de nuevo.", "bad"); }
 }
 function confirmDeleteUser(id) {
   if (!requireAdmin("eliminar integrantes")) return;
   const u = findUser(id);
   if (u.protected) { toast(`El perfil de ${u.fullName} está protegido y no se puede eliminar.`, "bad"); return; }
   document.getElementById("confirm-title").textContent = "¿Eliminar integrante?";
-  document.getElementById("confirm-text").textContent = `Se eliminará a "${u.fullName}" del sistema. Podrás deshacerlo unos segundos después.`;
-  document.getElementById("confirm-action-btn").onclick = () => {
-    const idx = users.findIndex(x=>x.id===id);
-    const [removed] = users.splice(idx, 1);
-    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó a <b>${escapeHtml(u.fullName)}</b> del sistema`);
-    closeModal("modal-confirm");
-    renderUsers();
-    showUndoToast(`"${removed.fullName}" fue eliminado.`, () => {
-      users.splice(idx, 0, removed);
-      renderUsers();
-    });
+  document.getElementById("confirm-text").textContent = `Se eliminará a "${u.fullName}" del sistema. Esto no se puede deshacer (su cuenta de acceso queda desactivada, aunque su usuario y contraseña ya no funcionarán para nada).`;
+  document.getElementById("confirm-action-btn").onclick = async () => {
+    try {
+      await db.collection("users").doc(id).delete();
+      await db.collection("usernames").doc(u.username).delete();
+      logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó a <b>${escapeHtml(u.fullName)}</b> del sistema`);
+      closeModal("modal-confirm");
+      toast(`"${u.fullName}" fue eliminado.`, "good");
+    } catch (e) { console.error(e); toast("No se pudo eliminar. Intenta de nuevo.", "bad"); }
   };
   openModal("modal-confirm");
 }
 /* ---------- Cierre de sesión remoto ----------
-   Simula la revocación de una sesión activa desde el panel de un Admin:
-   se marca al integrante como sesión inválida y un verificador "en vivo"
-   (ver SESSION_CHECK_INTERVAL_MS más abajo) cierra su sesión en cuanto lo
-   detecta — sin que la persona tenga que volver a intentar iniciar sesión
-   para enterarse, como pasaría en un cierre puramente pasivo. */
-function forceLogoutUser(id) {
+   El Admin marca a la persona como sesión inválida en Firestore; el
+   listener en tiempo real (ver attachUsersListener) hace que se le cierre
+   la sesión en su dispositivo en cuanto ese cambio llega — sin que tenga
+   que recargar ni volver a intentar iniciar sesión para enterarse. Si esa
+   persona vuelve a iniciar sesión normalmente después, queda reactivada
+   sola (ver enterAppAsUser). */
+async function forceLogoutUser(id) {
   if (!requireAdmin("cerrar la sesión de otro integrante")) return;
   const u = findUser(id);
   if (!u || u.id === currentUser().id) return;
-  u.sessionValid = false;
-  logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cerró la sesión remota de <b>${escapeHtml(u.fullName)}</b>`);
-  renderUsers();
-  toast(`Se cerrará la sesión de ${u.fullName} en su dispositivo.`, "good");
+  try {
+    await db.collection("users").doc(id).update({ sessionValid: false });
+    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cerró la sesión remota de <b>${escapeHtml(u.fullName)}</b>`);
+    toast(`Se cerrará la sesión de ${u.fullName} en su dispositivo.`, "good");
+  } catch (e) { console.error(e); toast("No se pudo cerrar esa sesión. Intenta de nuevo.", "bad"); }
 }
 
 /* ---------- Panel de notificaciones (campana) ---------- */
@@ -4236,8 +4417,8 @@ function renderNotifPanel() {
               ${ACCEPT_ROLE_OPTIONS.map(r => `<option value="${r}" ${r==="lector"?"selected":""}>${ROLES[r].label}</option>`).join("")}
             </select>
           </div>
-          <button class="btn btn-secondary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="rejectPending(${p.id})">Rechazar</button>
-          <button class="btn btn-primary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="acceptFromNotif(${p.id})">Aceptar</button>
+          <button class="btn btn-secondary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="rejectPending('${p.id}')">Rechazar</button>
+          <button class="btn btn-primary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="acceptFromNotif('${p.id}')">Aceptar</button>
         </div>
       </div>
     </div>`).join(""));
@@ -4254,8 +4435,8 @@ function renderNotifPanel() {
         <b>${escapeHtml(u.fullName)}</b>
         <div class="nr-meta">Olvidó su contraseña · @${u.username} · ${relTime(r.requestedAt)}</div>
         <div class="nr-actions">
-          <button class="btn btn-secondary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="discardPasswordReset(${r.id})">Descartar</button>
-          <button class="btn btn-primary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="generateTempPassword(${r.id})">Generar temporal</button>
+          <button class="btn btn-secondary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="discardPasswordReset('${r.id}')">Descartar</button>
+          <button class="btn btn-primary btn-sm" style="padding:5px 10px; font-size:11.5px;" onclick="generateTempPassword('${r.id}')">Generar temporal</button>
         </div>
       </div>
     </div>`;
@@ -4275,17 +4456,18 @@ function renderNotifPanel() {
   }
   body.innerHTML = parts.length ? parts.join("") : `<div class="notif-empty">No tienes notificaciones nuevas.</div>`;
 }
-function acceptFromNotif(id) {
+async function acceptFromNotif(id) {
   if (!requireAdmin("aceptar solicitudes de registro")) return;
   const p = pendingUsers.find(p => p.id === id);
+  if (!p) return;
   const roleSel = document.getElementById("notif-role-" + id);
   const role = roleSel ? roleSel.value : "lector";
-  users.push({ id: p.id, fullName: p.fullName, username: p.username, password: p.password, phone: p.phone, role, status: "activo", photo: p.photo, since: "2026-08-18", sessionValid: true });
-  pendingUsers.splice(pendingUsers.findIndex(x=>x.id===id), 1);
-  logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> aprobó el registro de <b>${escapeHtml(p.fullName)}</b> como ${ROLES[role].label}`);
-  refreshPendingBadge();
-  if (currentModule === "usuarios") renderUsers();
-  toast(`${p.fullName} fue aceptado como ${ROLES[role].label}.`, "good");
+  try {
+    await db.collection("users").doc(id).update({ role, status: "activo" });
+    await db.collection("usernames").doc(p.username).update({ role, status: "activo" });
+    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> aprobó el registro de <b>${escapeHtml(p.fullName)}</b> como ${ROLES[role].label}`);
+    toast(`${p.fullName} fue aceptado como ${ROLES[role].label}.`, "good");
+  } catch (e) { console.error(e); toast("No se pudo aceptar el registro. Intenta de nuevo.", "bad"); }
 }
 
 /* ---------- Restablecer contraseña ---------- */
@@ -4294,57 +4476,45 @@ function openForgotPasswordModal() {
   document.getElementById("forgot-pass-error").classList.add("hidden");
   openModal("modal-forgot-password");
 }
-function requestPasswordReset() {
+async function requestPasswordReset() {
   const uname = (document.getElementById("forgot-username").value || "").trim().toLowerCase();
   if (!uname) {
     document.getElementById("forgot-pass-error").classList.remove("hidden");
     return;
   }
-  const u = users.find(x => x.username === uname);
-  if (u && !passwordResetRequests.some(r => r.userId === u.id)) {
-    passwordResetRequests.push({ id: nextId(), userId: u.id, requestedAt: new Date().toISOString() });
-    refreshPendingBadge();
-  }
+  try {
+    const unameSnap = await db.collection("usernames").doc(uname).get();
+    if (unameSnap.exists) {
+      await db.collection("passwordResetRequests").add({ userId: unameSnap.data().uid, requestedAt: new Date().toISOString() });
+    }
+  } catch (e) { console.error("[Tercer Espacio] Error registrando solicitud de restablecimiento:", e); }
   closeModal("modal-forgot-password");
   // Mensaje neutro a propósito: no confirma ni desmiente si el usuario existe.
   toast("Si el usuario existe, un administrador revisará tu solicitud pronto.", "good");
 }
-function discardPasswordReset(id) {
-  const idx = passwordResetRequests.findIndex(r => r.id === id);
-  if (idx === -1) return;
-  passwordResetRequests.splice(idx, 1);
-  refreshPendingBadge();
-  if (currentModule === "usuarios") renderUsers();
-}
-function genTempPassword() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // sin caracteres que se confundan entre sí (0/O, 1/I)
-  let s = "";
-  for (let i = 0; i < 6; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return "TE-" + s;
+async function discardPasswordReset(id) {
+  try {
+    await db.collection("passwordResetRequests").doc(id).delete();
+  } catch (e) { console.error(e); toast("No se pudo descartar la solicitud. Intenta de nuevo.", "bad"); }
 }
 function generateTempPassword(id) {
-  if (!requireAdmin("generar una contraseña temporal")) return;
-  const idx = passwordResetRequests.findIndex(r => r.id === id);
-  if (idx === -1) return;
-  const req = passwordResetRequests[idx];
+  if (!requireAdmin("restablecer una contraseña")) return;
+  const req = passwordResetRequests.find(r => r.id === id);
+  if (!req) return;
   const u = findUser(req.userId);
-  passwordResetRequests.splice(idx, 1);
-  refreshPendingBadge();
-  if (currentModule === "usuarios") renderUsers();
+  discardPasswordReset(id); // ya se está atendiendo, se quita de la lista de pendientes
   if (!u) return;
-  const temp = genTempPassword();
-  u.password = temp;
-  logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> generó una contraseña temporal para <b>${escapeHtml(u.fullName)}</b>`);
+  logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> atendió la solicitud de restablecer contraseña de <b>${escapeHtml(u.fullName)}</b>`);
   document.getElementById("temp-pass-user").textContent = u.fullName;
-  document.getElementById("temp-pass-value").textContent = temp;
+  document.getElementById("temp-pass-value").textContent = u.username + "@tercer-espacio.local";
   openModal("modal-temp-password");
 }
 function copyTempPassword() {
   const val = document.getElementById("temp-pass-value").textContent;
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(val).then(() => toast("Contraseña copiada.", "good")).catch(() => toast("No se pudo copiar. Cópiala manualmente.", "bad"));
+    navigator.clipboard.writeText(val).then(() => toast("Correo copiado.", "good")).catch(() => toast("No se pudo copiar. Cópialo manualmente.", "bad"));
   } else {
-    toast("No se pudo copiar. Cópiala manualmente.", "bad");
+    toast("No se pudo copiar. Cópialo manualmente.", "bad");
   }
 }
 
@@ -4508,23 +4678,39 @@ function renderProfile() {
   document.getElementById("profile-input-name").value = u.fullName;
   document.getElementById("profile-input-phone").value = u.phone;
 }
-function saveProfileInfo() {
+async function saveProfileInfo() {
   const u = currentUser();
   const name = document.getElementById("profile-input-name").value.trim();
   const phone = document.getElementById("profile-input-phone").value.trim();
   if (!name) return toast("Tu nombre no puede quedar vacío.", "bad");
-  u.fullName = name; u.phone = phone;
-  renderProfile(); bootApp();
-  toast("Perfil actualizado.", "good");
+  const updates = { fullName: name, phone };
+  if (profilePhotoDraft !== null) updates.photo = profilePhotoDraft;
+  try {
+    await db.collection("users").doc(u.id).update(updates);
+    const dirUpdates = { fullName: name };
+    if (profilePhotoDraft !== null) dirUpdates.photo = profilePhotoDraft;
+    await db.collection("usernames").doc(u.username).update(dirUpdates);
+    profilePhotoDraft = null;
+    toast("Perfil actualizado.", "good");
+  } catch (e) { console.error(e); toast("No se pudo guardar tu perfil. Intenta de nuevo.", "bad"); }
 }
-function savePassword() {
+async function savePassword() {
   const p1 = document.getElementById("profile-pass1").value;
   const p2 = document.getElementById("profile-pass2").value;
   if (!passCharsetRe.test(p1) || p1.length < 8) return toast("La contraseña debe tener mínimo 8 caracteres, solo letras y números.", "bad");
   if (p1 !== p2) return toast("Las contraseñas no coinciden.", "bad");
-  currentUser().password = p1;
-  document.getElementById("profile-pass1").value = ""; document.getElementById("profile-pass2").value = "";
-  toast("Contraseña actualizada.", "good");
+  try {
+    await auth.currentUser.updatePassword(p1);
+    document.getElementById("profile-pass1").value = ""; document.getElementById("profile-pass2").value = "";
+    toast("Contraseña actualizada.", "good");
+  } catch (e) {
+    console.error(e);
+    if (e.code === "auth/requires-recent-login") {
+      toast("Por seguridad, cierra sesión y vuelve a entrar antes de cambiar tu contraseña.", "bad");
+    } else {
+      toast("No se pudo actualizar tu contraseña. Intenta de nuevo.", "bad");
+    }
+  }
 }
 
 /* ================= PIZARRA (corcho + post-its) ================= */
@@ -4538,11 +4724,8 @@ function seedNoteDate(daysAgo, hour, minute) {
   d.setHours(hour, minute, 0, 0);
   return d.toISOString();
 }
-const boardNotes = [
-  { id: nextId(), text: "¡Recuerden llevar las extensiones eléctricas extra el viernes para el montaje de Umbrales!", color: "postit-color-1", userId: users[1].id, x: 40, y: 46, rot: -3.2, createdAt: seedNoteDate(1, 11, 20) },
-  { id: nextId(), text: "Se necesitan 2 voluntarios de staff para el bazar de otoño. Avísenme por aquí o en persona 🙌", color: "postit-color-3", userId: users[0].id, x: 262, y: 88, rot: 2.6, createdAt: seedNoteDate(2, 16, 5) },
-  { id: nextId(), text: "Encontré un cable XLR suelto en la bodega, ya lo regresé al inventario. Etiquétenlos bien porfa", color: "postit-color-4", userId: users[2].id, x: 486, y: 60, rot: -1.4, createdAt: seedNoteDate(4, 9, 42) }
-];
+// Arranca vacío a propósito: nada de notas de ejemplo en la página real.
+const boardNotes = [];
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 function purgeExpiredNotes() {
   const now = Date.now();

@@ -43,6 +43,10 @@ service cloud.firestore {
       return isActive() && myRole() == "cooperador";
     }
 
+    function appSettingsExist() {
+      return exists(/databases/$(database)/documents/settings/app);
+    }
+
     function appSettings() {
       return get(/databases/$(database)/documents/settings/app).data;
     }
@@ -52,28 +56,64 @@ service cloud.firestore {
       return ("coopPerms" in mine) ? mine.coopPerms : appSettings().coopPerms;
     }
 
-    // ---------- Usuarios ----------
+    // Verdadero justo cuando el colectivo TODAVÍA no tiene ningún
+    // Administrador (proyecto recién creado). Se usa únicamente para
+    // permitir que la primera persona que se registra se vuelva admin
+    // sin que nadie tenga que aprobarla — porque todavía no hay nadie
+    // que pueda hacerlo. En cuanto esa primera cuenta se crea, se marca
+    // settings/app.adminBootstrapped = true y esta puerta se cierra para
+    // siempre (ver también la regla de settings/app más abajo).
+    function noAdminYet() {
+      return !appSettingsExist() || appSettings().adminBootstrapped != true;
+    }
+
+    // ---------- Usuarios (perfil privado y completo) ----------
     match /users/{uid} {
+      // El perfil completo (teléfono, permisos personalizados, estado de
+      // sesión, etc.) solo lo puede leer la propia persona o cualquier
+      // integrante ya activo (para poder listar "Usuarios", mostrar
+      // participantes de eventos, etc.).
       allow read: if isActive() || (isSignedIn() && myUid() == uid);
-      allow create: if isSignedIn() && myUid() == uid
-                    && request.resource.data.role in ["editor", "cooperador", "lector"]
-                    && request.resource.data.status == "pendiente";
+
+      allow create: if isSignedIn() && myUid() == uid && (
+        // Caso normal: te registras y quedas pendiente de aprobación.
+        // Nadie elige su propio rol al registrarse — lo asigna el
+        // Administrador cuando acepta la solicitud.
+        (request.resource.data.status == "pendiente" && !("role" in request.resource.data))
+        ||
+        // Caso arranque: el colectivo no tiene ningún Administrador
+        // todavía, así que la primera cuenta se activa sola como admin.
+        (noAdminYet() && request.resource.data.role == "admin" && request.resource.data.status == "activo")
+      );
+
       allow update: if isAdmin()
                     // el admin nunca puede crear un segundo administrador
                     ? !(request.resource.data.role == "admin" && resource.data.role != "admin")
-                    // cualquier otra persona activa solo puede tocar su propio perfil,
-                    // y nunca su propio rol ni su propio estado
+                    // cualquier otra persona activa solo puede tocar su
+                    // propio perfil (nombre, teléfono, foto) — nunca su
+                    // propio rol, estado, permisos de cooperador o el
+                    // estado de su sesión (eso lo controla el admin).
                     : (isActive() && myUid() == uid
                        && request.resource.data.role == resource.data.role
-                       && request.resource.data.status == resource.data.status);
+                       && request.resource.data.status == resource.data.status
+                       && request.resource.data.get('coopPerms', null) == resource.data.get('coopPerms', null)
+                       && request.resource.data.get('sessionValid', true) == resource.data.get('sessionValid', true));
       allow delete: if isAdmin() && resource.data.role != "admin";
     }
 
-    // Documento técnico para evitar nombres de usuario duplicados.
+    // ---------- Directorio público de nombres de usuario ----------
+    // Guarda solo lo mínimo para: (1) evitar nombres de usuario
+    // duplicados y (2) poder mostrar la vista previa (avatar, nombre,
+    // rol) en la pantalla de inicio de sesión ANTES de autenticarse,
+    // igual que hacía el prototipo original. No guarda teléfono ni
+    // nada más sensible — nada aquí es distinto de lo que cualquiera
+    // vería de todas formas al escribir ese nombre de usuario en el
+    // login.
     match /usernames/{username} {
-      allow read: if isSignedIn();
+      allow read: if true;
       allow create: if isSignedIn() && request.resource.data.uid == myUid();
-      allow update, delete: if false;
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
     }
 
     // ---------- Inventario ----------
@@ -113,6 +153,18 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // ---------- Solicitudes de restablecer contraseña ----------
+    // Quedan registradas para que el Administrador las vea y las
+    // atienda manualmente (ver ARQUITECTURA-FIREBASE.md: no hay forma
+    // de restablecer la contraseña de otra persona automáticamente sin
+    // un servidor propio). No incluyen contraseña alguna.
+    match /passwordResetRequests/{id} {
+      allow read: if isAdmin();
+      allow create: if true; // se puede pedir sin haber iniciado sesión
+      allow delete: if isAdmin();
+      allow update: if false;
+    }
+
     // ---------- Avisos de servicio al Administrador ----------
     match /serviceNotices/{id} {
       allow read: if isAdmin() || (isActive() && resource.data.userId == myUid());
@@ -135,7 +187,17 @@ service cloud.firestore {
       // mantenimiento activo y los textos de las pantallas de login/registro.
       // No contiene nada sensible.
       allow read: if true;
-      allow write: if isAdmin();
+      // Se puede crear una sola vez (con los valores por defecto de
+      // fábrica) por cualquier persona que inicie sesión — es lo que
+      // arranca un proyecto recién creado, antes de que exista ningún
+      // Administrador. En cuanto existe, solo el admin puede tocarla.
+      allow create: if isSignedIn() && !appSettingsExist();
+      // Nota: justo después de crear su propio users/{uid} con
+      // role:"admin" (ver arriba), isAdmin() ya evalúa en verdadero
+      // para esa persona en esta siguiente escritura — por eso la
+      // cuenta recién nacida en el arranque puede marcar
+      // adminBootstrapped:true sin necesitar un caso especial aquí.
+      allow update: if isAdmin();
     }
   }
 }

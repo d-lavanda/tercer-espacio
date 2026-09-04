@@ -6,10 +6,10 @@ Este documento explica cómo se va a guardar la información real del colectivo 
 
 - **Firebase Authentication** — quién puede entrar y con qué contraseña. Reemplaza la tabla de usuarios/contraseñas en texto plano del prototipo.
 - **Firestore** — la base de datos: inventario, eventos, movimientos de dinero, notas, avisos, etc.
-- **Firebase Storage** — las fotos e imágenes (foto de perfil, flyers de evento, fotos de artículos).
-- **Firebase Hosting** — dónde vive la página públicamente.
+- **Firebase Storage** — las fotos e imágenes (foto de perfil, flyers de evento, fotos de artículos). **Pausado por ahora**: Google cambió la regla en 2024 y ya exige el plan de pago Blaze (con tarjeta, aunque el uso normal de un colectivo chico se queda en $0) para poder usarlo. Mientras tanto las fotos de perfil se guardan directo en el perfil de Firestore (ver más abajo); items y eventos no tienen foto todavía.
+- **Firebase Hosting** — dónde vive la página públicamente. De momento la página está publicada en GitHub Pages en vez de Firebase Hosting (no necesita nada adicional de tu parte); se puede mover a Firebase Hosting más adelante sin cambiar el código.
 
-Los cuatro están dentro del plan gratuito de Firebase (**Spark**) para el tamaño de un colectivo — no hace falta activar facturación ni el plan de pago (**Blaze**) para nada de lo descrito aquí.
+Authentication y Firestore están dentro del plan gratuito de Firebase (**Spark**) para el tamaño de un colectivo — no hace falta facturación para esas dos. Storage es la excepción, explicada arriba.
 
 ## Autenticación: usuario + contraseña, con Firebase por dentro
 
@@ -19,18 +19,29 @@ El sistema sigue pidiendo **usuario** y **contraseña** al entrar, igual que hoy
 kevin.admin  →  kevin.admin@tercer-espacio.local
 ```
 
-Firebase se encarga de guardar la contraseña de forma segura (nunca queda en texto plano en ningún lado, ni siquiera yo puedo verla). Esto también nos da gratis, sin construir nada extra, un flujo real de "olvidé mi contraseña" por correo si en algún momento se usan correos reales en vez de este truco — por ahora seguimos con el flujo de reseteo por aprobación de administrador que ya existe, porque es el que tiene sentido para un colectivo pequeño.
+Firebase se encarga de guardar la contraseña de forma segura (nunca queda en texto plano en ningún lado, ni siquiera yo puedo verla).
+
+### Restablecer contraseña (limitación real, y cómo se resolvió)
+
+Como el correo de cada quien es inventado (nadie lo revisa), el "te mandamos un correo para restablecer tu contraseña" de Firebase no sirve aquí. Y como este sistema no tiene servidor propio (es una página que vive sola, sin backend), tampoco hay forma de que el código cambie automáticamente la contraseña de otra persona — eso solo lo puede hacer alguien con acceso a la consola de Firebase.
+
+Por eso el flujo quedó así: cuando alguien pide restablecer su contraseña, la solicitud se guarda (colección `passwordResetRequests`) y el Administrador la ve en Usuarios, igual que antes. Pero en vez de generar una contraseña temporal automáticamente, el botón le indica al Administrador que entre a Firebase console → Authentication → Users, busque a esa persona por su usuario, y desde ahí genere el restablecimiento. Es un paso manual extra (unos 30 segundos), pero solo pasa cuando alguien de verdad olvida su contraseña — no en el uso diario.
 
 ### Solicitudes de registro (aprobación de admin)
 
-Hoy, cuando alguien se registra, queda "pendiente" hasta que un admin lo aprueba, y no existe como usuario real hasta entonces. Con Firebase, la cuenta se crea de una vez (con su usuario y contraseña ya funcionando por dentro), pero queda marcada `status: "pendiente"` en su perfil. Si esa persona intenta entrar antes de ser aprobada, el sistema la reconoce, le muestra el mismo aviso de "tu cuenta está en revisión" y cierra la sesión automáticamente — para quien lo usa, se siente exactamente igual que ahora. Cuando el admin aprueba, solo se cambia ese estado a `"activo"`, sin crear nada de cero.
+Hoy, cuando alguien se registra, queda "pendiente" hasta que un admin lo aprueba, y no existe como usuario activo hasta entonces. Con Firebase, la cuenta de acceso (usuario + contraseña) se crea de una vez, pero su perfil queda marcado `status: "pendiente"` **y sin rol todavía** — el rol lo sigue eligiendo el admin al momento de aceptar la solicitud, exactamente como hoy. Si esa persona intenta entrar antes de ser aprobada, el sistema la reconoce, le muestra el mismo aviso de "tu cuenta está en revisión" y no la deja pasar. Cuando el admin aprueba, se le asigna el rol elegido y su estado pasa a `"activo"`.
+
+### El primer Administrador (arranque de un proyecto nuevo)
+
+Un proyecto de Firebase recién creado no tiene ningún usuario todavía — y para aprobar solicitudes hace falta que exista al menos un Administrador. Por eso hay una única excepción a la regla de "todo registro queda pendiente": si nadie se ha registrado nunca en el proyecto, la primera cuenta que se crea se activa sola, directamente como Administrador. En cuanto eso pasa, la puerta se cierra para siempre (se marca `settings/app.adminBootstrapped = true`) y cualquier registro después de ese sigue el flujo normal de aprobación. Esto es lo que te va a permitir crear tu primera cuenta real usando la misma pantalla de "Registrarme" que ya conoces, sin que yo tenga que tocar nada de tu proyecto por fuera.
 
 ## Colecciones de Firestore
 
 | Colección | Qué guarda |
 |---|---|
-| `users/{uid}` | Perfil de cada persona: nombre, usuario, teléfono, rol, estado (activo/pendiente), foto, permisos personalizados de Cooperador. |
-| `usernames/{username}` | Solo existe para evitar usuarios duplicados (ver abajo). |
+| `users/{uid}` | Perfil completo y privado de cada persona: nombre, usuario, teléfono, rol, estado (activo/pendiente), foto, permisos personalizados de Cooperador, si su sesión fue cerrada remotamente. Solo lo puede leer la propia persona o cualquier integrante ya activo. |
+| `usernames/{username}` | Directorio público (ver abajo): evita usuarios duplicados y permite la vista previa en la pantalla de login. |
+| `passwordResetRequests/{id}` | Solicitudes de "olvidé mi contraseña", pendientes de que el admin las atienda a mano (ver arriba). |
 | `items/{id}` | Artículos del inventario. |
 | `events/{id}` | Eventos del calendario. |
 | `transactions/{id}` | Movimientos de la Billetera (ingresos/egresos). |
@@ -38,11 +49,13 @@ Hoy, cuando alguien se registra, queda "pendiente" hasta que un admin lo aprueba
 | `avisos/{id}` | Notificaciones de la campana (generales y dirigidas a una persona). |
 | `serviceNotices/{id}` | Avisos de servicio al Administrador (y su respuesta). |
 | `activityLog/{id}` | Historial de actividad. |
-| `settings/app` | Un solo documento con configuración global: modo mantenimiento, su mensaje, y los textos editables de las pantallas de inicio de sesión y registro. |
+| `settings/app` | Un solo documento con configuración global: modo mantenimiento, su mensaje, los textos editables de las pantallas de inicio de sesión y registro, y si ya existe un Administrador (`adminBootstrapped`). |
 
-### Por qué existe `usernames/{username}`
+### Por qué existe `usernames/{username}`, y por qué es público
 
-Firestore no tiene forma de decir "este campo debe ser único" como lo haría una hoja de cálculo con una columna sin duplicados. El truco estándar es: al registrarse, además de crear el perfil en `users`, se crea un documento `usernames/kevin.admin` que apunta a ese usuario. Si alguien más intenta registrarse con el mismo nombre, ese documento ya existe y el sistema lo rechaza antes de crear nada. Es un documento técnico, nunca lo vas a ver ni necesitas tocarlo.
+Firestore no tiene forma de decir "este campo debe ser único" como lo haría una hoja de cálculo con una columna sin duplicados. El truco estándar es: al registrarse, además de crear el perfil en `users`, se crea un documento `usernames/kevin.admin` que apunta a ese usuario. Si alguien más intenta registrarse con el mismo nombre, ese documento ya existe y el sistema lo rechaza antes de crear nada.
+
+Este documento también es el que permite la vista previa del login (el avatar y nombre que aparecen mientras escribes tu usuario, antes de iniciar sesión) — por eso, a diferencia del perfil completo en `users`, cualquiera puede leerlo sin haber iniciado sesión. Solo guarda lo que ya era visible en esa pantalla en el prototipo original: nombre, rol, foto y si la cuenta sigue pendiente de aprobación. Nunca guarda teléfono, contraseña ni nada más.
 
 ### Notificaciones dirigidas (la respuesta del admin a un aviso de servicio)
 

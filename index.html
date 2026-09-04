@@ -3270,7 +3270,14 @@ async function handleRegister() {
 
 /* ================= BOOT DE LA APP ================= */
 function bootApp() {
-  const u = currentUser();
+  // Usa myProfile (ya disponible de forma síncrona desde el login) y no
+  // currentUser(), que busca en `users` — esa lista todavía puede estar
+  // vacía en este instante porque attachUsersListener() recién se activó
+  // y su primer resultado de Firestore llega de forma asíncrona. Antes
+  // esto hacía que currentUser() cayera en el perfil por defecto de
+  // findUser() (rol "lector"), y la sesión arrancaba siempre mostrando
+  // la vista de Lector sin importar el rol real de quien inició sesión.
+  const u = myProfile;
   document.getElementById("view-login").classList.add("hidden");
   document.getElementById("view-register").classList.add("hidden");
   document.getElementById("app-shell").classList.remove("hidden");

@@ -2433,6 +2433,11 @@ const state = {
   editingItemId: null,
   editingEventId: null,
   coopPerms: { invEdit: true, invDelete: false, calEdit: true, calDelete: false },
+  // uid del segundo Administrador (además de quien inició la primera
+  // cuenta), o null si todavía no se asignó a nadie. Ver
+  // attachAppSettingsListener y ARQUITECTURA-FIREBASE.md: nunca puede
+  // haber más de dos Administradores en el sistema.
+  secondAdminUid: null,
   theme: "dark"
 };
 
@@ -2679,7 +2684,17 @@ function performUndo(id) {
 
 /* ---------- Modales ---------- */
 function openModal(id) { document.getElementById(id).classList.remove("hidden"); }
-function closeModal(id) { document.getElementById(id).classList.add("hidden"); }
+function closeModal(id) {
+  document.getElementById(id).classList.add("hidden");
+  // modal-confirm se reutiliza para varias confirmaciones (eliminar,
+  // cambios de rol, etc.) y algunas de ellas cambian el texto del botón
+  // (ver confirmRoleChange) — se restablece a "Eliminar" al cerrar para
+  // que el resto de los usos (que sí son eliminaciones) no hereden un
+  // texto de otra acción.
+  if (id === "modal-confirm") {
+    document.getElementById("confirm-action-btn").textContent = "Eliminar";
+  }
+}
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") document.querySelectorAll(".modal-backdrop:not(.hidden)").forEach(m => m.classList.add("hidden"));
 });
@@ -2830,14 +2845,31 @@ let myProfile = null;
 // exista el documento users/{uid} y cerrarle la sesión a alguien que
 // apenas se está registrando.
 let suppressAuthHandler = false;
-let unsubUsers = null, unsubPasswordResets = null;
+let unsubUsers = null, unsubPasswordResets = null, unsubAppSettings = null;
 
 function detachAllFirestoreListeners() {
   if (unsubUsers) { unsubUsers(); unsubUsers = null; }
   if (unsubPasswordResets) { unsubPasswordResets(); unsubPasswordResets = null; }
+  if (unsubAppSettings) { unsubAppSettings(); unsubAppSettings = null; }
   users = [];
   pendingUsers = [];
   passwordResetRequests.length = 0;
+  state.secondAdminUid = null;
+}
+
+// Mantiene en vivo settings/app: los permisos generales de Cooperador
+// y quién es (si existe) el segundo Administrador. Antes esto solo se
+// leía una vez al arrancar el prototipo local; con Firestore real hace
+// falta un listener para que un cambio hecho desde otra sesión (por
+// ejemplo, otro Administrador) se refleje sin tener que recargar.
+function attachAppSettingsListener() {
+  if (unsubAppSettings) return;
+  unsubAppSettings = db.collection("settings").doc("app").onSnapshot((doc) => {
+    const data = doc.exists ? doc.data() : {};
+    state.coopPerms = Object.assign({ invEdit: true, invDelete: false, calEdit: true, calDelete: false }, data.coopPerms || {});
+    state.secondAdminUid = data.secondAdminUid || null;
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando la configuración general:", err));
 }
 
 // Mantiene `users`/`pendingUsers` reflejando en vivo la colección
@@ -2889,6 +2921,7 @@ async function enterAppAsUser(uid, data) {
   }
   attachUsersListener();
   attachPasswordResetListener();
+  attachAppSettingsListener();
   bootApp();
 }
 
@@ -4212,17 +4245,37 @@ function renderUsers() {
 
   document.getElementById("users-tbody").innerHTML = users.map(u => {
     const isSelf = u.id === currentUser().id;
-    const isOnlyAdmin = u.role === "admin";
+    const isAdminRow = u.role === "admin";
+    // De los administradores, solo el "segundo" (el que se asignó desde
+    // esta pantalla, ver settings/app.secondAdminUid) se puede degradar
+    // de nuevo desde acá. La cuenta original de Administrador queda
+    // siempre protegida — igual que antes de esta función existir.
+    const isSecondAdminRow = isAdminRow && u.id === state.secondAdminUid;
+    const isOriginalAdminRow = isAdminRow && !isSecondAdminRow;
     const hasCustomPerms = u.role === "cooperador" && !!u.coopPerms;
+    // Solo puede haber un segundo Administrador además de quien tiene la
+    // cuenta original. Si ya hay uno asignado (y no es esta fila), no se
+    // ofrece "Administrador" como opción para no invitar a un intento que
+    // las reglas de Firestore van a rechazar de todas formas.
+    const secondAdminTaken = !!state.secondAdminUid && state.secondAdminUid !== u.id;
+    const canOfferAdmin = admin && !isAdminRow && !secondAdminTaken;
+    const roleSelectDisabled = isOriginalAdminRow || !admin;
+    const roleSelectTitle = isOriginalAdminRow
+      ? 'El rol de la cuenta Administrador original no se cambia desde aquí'
+      : (!admin
+        ? 'Solo un Administrador puede cambiar roles'
+        : (isSecondAdminRow
+          ? 'Puedes quitarle el rol de Administrador a esta persona'
+          : (secondAdminTaken ? 'Ya hay un segundo Administrador asignado; solo puede haber uno además de ti' : '')));
     return `<tr>
       <td class="user-cell-td"><div class="user-cell">${avatarHTML(u,36)}<div><b>${escapeHtml(u.fullName)}${isSelf?' <span class="text-muted" style="font-weight:400;font-size:11.5px;">(tú)</span>':''}${u.protected?` <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style="vertical-align:-1px; color:var(--ink-muted);" title="Perfil protegido: no se puede eliminar"><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.8"/><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`:''}</b><span>@${u.username}</span></div></div></td>
       <td class="text-secondary" data-label="Teléfono">${u.phone}</td>
       <td data-label="Rol">
         <div class="flex items-center gap-1">
           <div class="select-wrap">
-            <select class="input role-select ${ROLES[u.role].badgeClass}" style="border-color:transparent;" ${(isOnlyAdmin||!admin)?'disabled':''} title="${isOnlyAdmin?'Solo puede haber un administrador':(!admin?'Solo un Administrador puede cambiar roles':'')}" onchange="changeUserRole('${u.id}', this.value)">
+            <select class="input role-select ${ROLES[u.role].badgeClass}" style="border-color:transparent;" ${roleSelectDisabled?'disabled':''} title="${roleSelectTitle}" onchange="changeUserRole('${u.id}', this.value)">
               ${["editor","cooperador","lector"].map(r => `<option value="${r}" ${u.role===r?'selected':''}>${ROLES[r].label}</option>`).join("")}
-              ${isOnlyAdmin ? `<option value="admin" selected>Administrador</option>` : ""}
+              ${isAdminRow ? `<option value="admin" selected>Administrador</option>` : (canOfferAdmin ? `<option value="admin">Administrador</option>` : "")}
             </select>
           </div>
           ${hasCustomPerms ? `<span class="badge badge-editor" title="Tiene permisos personalizados, distintos a los generales de Cooperador">Personalizado</span>` : ""}
@@ -4238,7 +4291,7 @@ function renderUsers() {
         <div class="row-actions">
           <button class="btn-icon" title="Editar" onclick="openEditUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="m16.5 3.5 4 4L8 20H4v-4L16.5 3.5Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>
           ${(admin && !isSelf && u.sessionValid !== false) ? `<button class="btn-icon" title="Cerrar sesión remota" onclick="forceLogoutUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 21H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3M16 17l5-5-5-5M21 12H9" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>` : ""}
-          ${(isOnlyAdmin || !admin) ? "" : (u.protected
+          ${(isAdminRow || !admin) ? "" : (u.protected
             ? `<button class="btn-icon" disabled title="Este perfil está protegido y no se puede eliminar" style="opacity:.45; cursor:not-allowed;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="5" y="10" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M8 10V7a4 4 0 0 1 8 0v3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>`
             : `<button class="btn-icon" title="Eliminar" onclick="confirmDeleteUser('${u.id}')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m2 0v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7h12Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></button>`
           )}
@@ -4270,18 +4323,83 @@ async function rejectPending(id) {
     toast(`Solicitud de ${p.fullName} rechazada.`, "bad");
   } catch (e) { console.error(e); toast("No se pudo rechazar la solicitud. Intenta de nuevo.", "bad"); }
 }
+// Pide confirmación aparte antes de aplicar un cambio de rol que involucra
+// el rol de Administrador (nombrar o quitar) — es una acción de mucho peso
+// (control total del sistema) como para aplicarse directo con el cambio
+// del <select>, igual que ya se hace con "Eliminar integrante".
+function confirmRoleChange(id, u, prevRole, role, title, text, btnLabel) {
+  document.getElementById("confirm-title").textContent = title;
+  document.getElementById("confirm-text").textContent = text;
+  document.getElementById("confirm-action-btn").textContent = btnLabel;
+  document.getElementById("confirm-action-btn").onclick = async () => {
+    try {
+      await commitRoleChange(id, u, prevRole, role);
+      closeModal("modal-confirm");
+    } catch (e) { console.error(e); toast("No se pudo cambiar el rol. Intenta de nuevo.", "bad"); renderUsers(); }
+  };
+  openModal("modal-confirm");
+  renderUsers(); // el <select> ya disparó el cambio visualmente; se revierte hasta confirmar
+}
+
 async function changeUserRole(id, role) {
   if (!requireAdmin("cambiar el rol de un integrante")) { renderUsers(); return; }
   const u = findUser(id);
   const prevRole = u.role;
-  try {
-    await db.collection("users").doc(id).update({ role });
-    await db.collection("usernames").doc(u.username).update({ role });
-    if (prevRole !== role) {
-      logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cambió el rol de <b>${escapeHtml(u.fullName)}</b> de <b>${ROLES[prevRole].label}</b> a <b>${ROLES[role].label}</b>`);
+  if (prevRole === role) return;
+
+  // Nombrar Administrador está limitado a un solo integrante extra aparte
+  // de la cuenta original (ver settings/app.secondAdminUid y
+  // firestore.rules). Si el cupo ya está ocupado por otra persona, ni
+  // siquiera se ofrece la opción en el <select> — pero se valida también
+  // acá por si el estado local quedó desactualizado un instante.
+  if (role === "admin" && prevRole !== "admin") {
+    if (state.secondAdminUid && state.secondAdminUid !== id) {
+      toast("Ya hay un segundo Administrador asignado. Solo puede haber uno además de tu cuenta.", "bad");
+      renderUsers();
+      return;
     }
-    toast(`${u.fullName} ahora es ${ROLES[role].label}.`, "good");
+    confirmRoleChange(id, u, prevRole, role, "¿Nombrar Administrador?",
+      `"${u.fullName}" va a tener control total del sistema, igual que tú (incluyendo Usuarios, Billetera y Panel admin). Solo puede haber un Administrador además de tu cuenta.`,
+      "Nombrar Administrador");
+    return;
+  }
+
+  // Quitarle el rol a un Administrador (siempre es el segundo, nunca la
+  // cuenta original — ver isOriginalAdminRow en renderUsers) libera el
+  // cupo para poder nombrar a otra persona más adelante.
+  if (prevRole === "admin" && role !== "admin") {
+    confirmRoleChange(id, u, prevRole, role, "¿Quitar el rol de Administrador?",
+      `"${u.fullName}" ya no va a tener control total del sistema. Después vas a poder nombrar a otra persona como segundo Administrador si quieres.`,
+      "Quitar rol de Administrador");
+    return;
+  }
+
+  try {
+    await commitRoleChange(id, u, prevRole, role);
   } catch (e) { console.error(e); toast("No se pudo cambiar el rol. Intenta de nuevo.", "bad"); renderUsers(); }
+}
+
+// Aplica el cambio de rol en Firestore. Cuando se trata de nombrar al
+// segundo Administrador, el mismo lote (batch) marca su uid en
+// settings/app.secondAdminUid — así las reglas de seguridad pueden
+// verificar, de forma atómica, que el cupo seguía libre justo antes de
+// este cambio (ver firestore.rules y ARQUITECTURA-FIREBASE.md). Al
+// quitarle el rol al segundo Administrador, el mismo lote libera ese
+// cupo de nuevo para que se pueda nombrar a otra persona después.
+async function commitRoleChange(id, u, prevRole, role) {
+  const batch = db.batch();
+  batch.update(db.collection("users").doc(id), { role });
+  batch.update(db.collection("usernames").doc(u.username), { role });
+  if (role === "admin" && prevRole !== "admin") {
+    batch.update(db.collection("settings").doc("app"), { secondAdminUid: id });
+  } else if (prevRole === "admin" && role !== "admin" && state.secondAdminUid === id) {
+    batch.update(db.collection("settings").doc("app"), { secondAdminUid: null });
+  }
+  await batch.commit();
+  if (prevRole !== role) {
+    logActivity("usuarios", `<b>${escapeHtml(currentUser().fullName)}</b> cambió el rol de <b>${escapeHtml(u.fullName)}</b> de <b>${ROLES[prevRole].label}</b> a <b>${ROLES[role].label}</b>`);
+  }
+  toast(`${u.fullName} ahora es ${ROLES[role].label}.`, "good");
 }
 async function updateCoopPerms() {
   if (!requireAdmin("cambiar los permisos de Cooperador")) { renderUsers(); return; }

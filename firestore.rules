@@ -56,6 +56,14 @@ service cloud.firestore {
       return ("coopPerms" in mine) ? mine.coopPerms : appSettings().coopPerms;
     }
 
+    // uid del segundo Administrador (además de quien tiene la cuenta
+    // original), o null si todavía no se asignó a nadie. Ver la regla
+    // de users/{uid} más abajo: nunca puede haber más de dos
+    // Administradores en el sistema al mismo tiempo.
+    function secondAdminUid() {
+      return appSettingsExist() ? appSettings().get('secondAdminUid', null) : null;
+    }
+
     // Verdadero justo cuando el colectivo TODAVÍA no tiene ningún
     // Administrador (proyecto recién creado). Se usa únicamente para
     // permitir que la primera persona que se registra se vuelva admin
@@ -87,8 +95,15 @@ service cloud.firestore {
       );
 
       allow update: if isAdmin()
-                    // el admin nunca puede crear un segundo administrador
-                    ? !(request.resource.data.role == "admin" && resource.data.role != "admin")
+                    // el admin puede nombrar como máximo UN Administrador
+                    // adicional además de sí mismo: si ya hay uno
+                    // asignado (secondAdminUid ocupado por otro uid), no
+                    // se puede ascender a nadie más. El resto de los
+                    // cambios que puede hacer un admin (incluyendo
+                    // degradar a un Administrador existente) no tiene
+                    // restricción aquí.
+                    ? !(request.resource.data.role == "admin" && resource.data.role != "admin"
+                        && secondAdminUid() != null && secondAdminUid() != uid)
                     // cualquier otra persona activa solo puede tocar su
                     // propio perfil (nombre, teléfono, foto) — nunca su
                     // propio rol, estado, permisos de cooperador o el
@@ -197,7 +212,15 @@ service cloud.firestore {
       // para esa persona en esta siguiente escritura — por eso la
       // cuenta recién nacida en el arranque puede marcar
       // adminBootstrapped:true sin necesitar un caso especial aquí.
-      allow update: if isAdmin();
+      //
+      // adminBootstrapped es de una sola vía (una vez true, ningún admin
+      // lo puede volver a tocar): si se pudiera desmarcar, se reabriría
+      // la puerta de noAdminYet() y cualquier persona que se registrara
+      // después podría auto-nombrarse Administrador, sin pasar por el
+      // límite de "como máximo un Administrador más" que sí protege la
+      // regla de users/{uid} de arriba.
+      allow update: if isAdmin()
+                    && request.resource.data.get('adminBootstrapped', true) == resource.data.get('adminBootstrapped', true);
     }
   }
 }

@@ -35,6 +35,16 @@ Hoy, cuando alguien se registra, queda "pendiente" hasta que un admin lo aprueba
 
 Un proyecto de Firebase recién creado no tiene ningún usuario todavía — y para aprobar solicitudes hace falta que exista al menos un Administrador. Por eso hay una única excepción a la regla de "todo registro queda pendiente": si nadie se ha registrado nunca en el proyecto, la primera cuenta que se crea se activa sola, directamente como Administrador. En cuanto eso pasa, la puerta se cierra para siempre (se marca `settings/app.adminBootstrapped = true`) y cualquier registro después de ese sigue el flujo normal de aprobación. Esto es lo que te va a permitir crear tu primera cuenta real usando la misma pantalla de "Registrarme" que ya conoces, sin que yo tenga que tocar nada de tu proyecto por fuera.
 
+### El segundo Administrador (como máximo uno más)
+
+Además de tu cuenta original, el Administrador puede nombrar a **un** integrante más como Administrador desde Usuarios (el `<select>` de rol de cualquier persona ya activa ofrece "Administrador" como opción). Es la única forma de crear un Administrador nuevo después del arranque — nadie puede auto-asignarse el rol, ni siquiera registrándose de nuevo.
+
+El cupo se controla con `settings/app.secondAdminUid`: guarda el uid de esa segunda persona, o `null` si todavía no se asignó a nadie.
+
+- **Nombrar**: al elegir "Administrador" para alguien, el sistema pide confirmación aparte (por el peso de la acción) y, si el cupo está libre, escribe en un mismo lote (batch) su nuevo rol *y* `secondAdminUid`. Las reglas de seguridad verifican, de forma atómica, que el cupo seguía libre justo antes — así dos nombramientos a la vez nunca podrían dejar tres Administradores.
+- **Quitar**: solo se puede quitar el rol al segundo Administrador (nunca a tu cuenta original, que sigue protegida igual que siempre — su fila en Usuarios no se puede tocar desde ahí). Al hacerlo, el mismo lote limpia `secondAdminUid` de vuelta a `null`, liberando el cupo para nombrar a alguien más adelante si hace falta.
+- Como con el arranque, `settings/app.adminBootstrapped` queda protegido para que ningún Administrador (ni por error) pueda desmarcarlo y reabrir la puerta de auto-nombrarse admin al registrarse — eso rompería el límite de "como máximo dos Administradores en total".
+
 ## Colecciones de Firestore
 
 | Colección | Qué guarda |
@@ -49,7 +59,7 @@ Un proyecto de Firebase recién creado no tiene ningún usuario todavía — y p
 | `avisos/{id}` | Notificaciones de la campana (generales y dirigidas a una persona). |
 | `serviceNotices/{id}` | Avisos de servicio al Administrador (y su respuesta). |
 | `activityLog/{id}` | Historial de actividad. |
-| `settings/app` | Un solo documento con configuración global: modo mantenimiento, su mensaje, los textos editables de las pantallas de inicio de sesión y registro, y si ya existe un Administrador (`adminBootstrapped`). |
+| `settings/app` | Un solo documento con configuración global: modo mantenimiento, su mensaje, los textos editables de las pantallas de inicio de sesión y registro, si ya existe un Administrador (`adminBootstrapped`) y el uid del segundo Administrador si hay uno asignado (`secondAdminUid`). |
 
 ### Por qué existe `usernames/{username}`, y por qué es público
 
@@ -65,7 +75,7 @@ Cada documento en `avisos` tiene un campo `targetUserId`. Si está vacío, es un
 
 Las reglas reproducen exactamente el sistema de permisos que ya construimos (la función `can()`), pero del lado del servidor — es decir, ya no dependen de que la app se comporte bien, Firebase las hace cumplir aunque alguien intentara saltarse la pantalla:
 
-- **Administrador**: acceso total. Es el único rol que puede crear otro Administrador (y solo puede haber uno, igual que hoy).
+- **Administrador**: acceso total. Es el único rol que puede nombrar Administradores nuevos, y como máximo puede haber uno más además de la cuenta original (ver "El segundo Administrador" arriba).
 - **Editor**: control total sobre Inventario y Calendario. No entra a Usuarios ni Billetera.
 - **Cooperador**: Inventario y Calendario según los permisos que el admin le configuró (generales o personalizados por persona) — igual que hoy.
 - **Lector**: solo lectura en todo.

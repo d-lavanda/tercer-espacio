@@ -648,14 +648,12 @@ select.input::-ms-expand { display: none; }
 .topbar-title { font-family: var(--font-display); font-size: 19px; }
 .topbar-actions { display: flex; align-items: center; gap: 14px; }
 
+/* .role-switcher / .role-switcher-menu: nombres heredados de cuando este
+   contenedor también envolvía el selector de "Vista previa" de rol (ya
+   eliminado por ser una vulnerabilidad — ver bootApp/applyMyRole).
+   Se conservan porque el panel de notificaciones reutiliza el mismo
+   posicionamiento de dropdown. */
 .role-switcher { position: relative; }
-.role-switcher-btn {
-  display: flex; align-items: center; gap: 9px; padding: 8px 12px 8px 8px;
-  background: var(--surface-2); border: 1px solid var(--border-hairline); border-radius: var(--r-pill);
-  font-size: 12.5px; color: var(--ink-secondary);
-}
-.role-switcher-btn:hover { border-color: var(--border-strong); }
-.role-switcher-btn .rs-pill { width: 22px; height: 22px; border-radius: 50%; background: var(--red-tint-14); display:flex; align-items:center; justify-content:center; }
 .role-switcher-menu {
   position: absolute; right: 0; top: calc(100% + 8px); width: 250px;
   background: var(--surface-2); border: 1px solid var(--border-hairline); border-radius: var(--r-md);
@@ -663,9 +661,6 @@ select.input::-ms-expand { display: none; }
 }
 .role-switcher-menu.open { display: block; }
 .role-switcher-menu .rs-note { font-size: 11px; color: var(--ink-muted); padding: 8px 10px 10px; line-height: 1.5; border-bottom: 1px solid var(--border-hairline); margin-bottom: 6px; }
-.rs-option { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: var(--r-sm); font-size: 13.5px; color: var(--ink-secondary); }
-.rs-option:hover { background: var(--surface-3); color: var(--ink-primary); }
-.rs-option.active { color: var(--red-300); background: var(--red-tint-08); }
 
 .icon-btn-bell { position: relative; }
 .bell-dot { position: absolute; top: 6px; right: 7px; width: 8px; height: 8px; border-radius: 50%; background: var(--red-500); border: 2px solid var(--bg-app); }
@@ -1146,8 +1141,6 @@ select.input.role-select:disabled { opacity: 0.85; cursor: not-allowed; }
   .topbar { padding: 0 14px; height: 60px; }
   .topbar-title { font-size: 16px; }
   .topbar-actions { gap: 8px; }
-  .role-switcher-btn span:not(.rs-pill) { display: none; }
-  .role-switcher-btn { padding: 8px; }
   .user-menu-trigger { padding: 4px; background: none; border-color: transparent; }
   .user-menu-trigger b, .user-menu-trigger span { display: none; }
   .role-switcher-menu, .notif-panel, .user-menu-dd { position: fixed; left: 12px; right: 12px; width: auto; top: 64px; }
@@ -1470,23 +1463,6 @@ select.input.role-select:disabled { opacity: 0.85; cursor: not-allowed; }
         <div class="topbar-title" id="topbar-title">Resumen</div>
       </div>
       <div class="topbar-actions">
-        <div class="role-switcher">
-          <button class="role-switcher-btn" onclick="toggleDropdown('role-switcher-menu')">
-            <span class="rs-pill">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none"><path d="M12 3 3 12l9 9 9-9-9-9Z" style="stroke:var(--red-300);" stroke-width="1.8" stroke-linejoin="round"/></svg>
-            </span>
-            <span>Vista previa: <b id="role-switcher-label" style="color:var(--ink-primary)">Admin</b></span>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none"><path d="m6 9 6 6 6-6" stroke="currentColor" stroke-width="2"/></svg>
-          </button>
-          <div class="role-switcher-menu" id="role-switcher-menu">
-            <div class="rs-note">Cambia de rol para previsualizar qué puede ver y editar cada tipo de integrante.</div>
-            <div class="rs-option active" data-role="admin" onclick="setPreviewRole('admin')">Administrador</div>
-            <div class="rs-option" data-role="editor" onclick="setPreviewRole('editor')">Editor</div>
-            <div class="rs-option" data-role="cooperador" onclick="setPreviewRole('cooperador')">Cooperador</div>
-            <div class="rs-option" data-role="lector" onclick="setPreviewRole('lector')">Lector</div>
-          </div>
-        </div>
-
         <button class="btn-icon" onclick="openModal('modal-service-notice')" title="Reportar un problema o dejar un aviso">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M4 5.5a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H9l-4 3.5v-3.5H6a2 2 0 0 1-2-2v-9Z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M12 8.3v3.4M12 15h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         </button>
@@ -2421,7 +2397,10 @@ const ROLES = {
 /* ---------- Estado en memoria ---------- */
 const state = {
   currentUserId: null,
-  previewRole: "admin", // rol usado para evaluar permisos en el prototipo
+  // Mi rol real ya resuelto (nunca elegible por la persona — ver
+  // applyMyRole). El valor de acá es solo el default antes de iniciar
+  // sesión; bootApp lo reemplaza siempre por el rol real de Firestore.
+  previewRole: "admin",
   calMonth: new Date(2026, 7, 1), // agosto 2026
   calView: "mes",
   activeCatFilters: new Set(Object.keys(EVENT_CATEGORIES)),
@@ -2890,11 +2869,15 @@ function attachUsersListener() {
     pendingUsers = pending;
 
     // Si mi propio perfil cambió (un admin me cambió el rol, o cerró mi
-    // sesión remotamente desde Usuarios), reacciona de inmediato.
+    // sesión remotamente desde Usuarios), reacciona de inmediato: lo que
+    // veo tiene que reflejar siempre mi rol real y actual, nunca uno
+    // desactualizado de antes del cambio (ver applyMyRole).
     const mine = myProfile ? all.find(u => u.id === myProfile.id) : null;
     if (mine) {
+      const roleChanged = mine.role !== myProfile.role;
       myProfile = mine;
       if (mine.sessionValid === false) { handleLogout(); return; }
+      if (roleChanged) applyMyRole(mine.role, true);
     }
     refreshPendingBadge();
     if (document.body.classList.contains("app-active")) renderCurrentModule();
@@ -3289,13 +3272,25 @@ function bootApp() {
   document.getElementById("topbar-userrole").textContent = ROLES[u.role].label;
   document.getElementById("sidebar-role-label").textContent = ROLES[u.role].label;
 
-  setPreviewRole(u.role, true);
+  applyMyRole(u.role, true);
   refreshPendingBadge();
   refreshMochilaBadges();
   switchModule("home");
 }
 
 const ADMIN_ONLY_MODULES = ["usuarios", "historial", "panel-admin"];
+// state.previewRole ya NO es un rol elegible por la persona — antes existía
+// un selector "Vista previa" en la barra superior que dejaba que
+// cualquier cuenta (sin importar su rol real) se mostrara a sí misma
+// como Administrador; se quitó por ser justo eso, una vulnerabilidad. El
+// nombre interno se conserva para no tocar cada punto del código que lo
+// usa, pero ahora es simplemente "mi rol real ya resuelto": se fija una
+// sola vez al iniciar sesión (ver bootApp) y se mantiene al día si un
+// Administrador cambia tu rol mientras sigues conectado (ver
+// attachUsersListener). Ya no existe ningún botón ni función en la
+// interfaz que permita cambiarlo — lo único que decide qué ve cada
+// quien es el rol que tiene guardado en Firestore, igual que ya exigen
+// las reglas de seguridad del lado del servidor.
 function isAdminPreview() { return state.previewRole === "admin"; }
 function requireAdmin(actionLabel) {
   if (isAdminPreview()) return true;
@@ -3303,18 +3298,19 @@ function requireAdmin(actionLabel) {
   return false;
 }
 
-function setPreviewRole(role, silent) {
+// Aplica a la interfaz el rol real de quien inició sesión: qué secciones
+// del menú ve, a qué módulos puede entrar, etc. Se llama al iniciar
+// sesión y cada vez que llega un cambio de rol en tiempo real — nunca
+// desde un control que la propia persona pueda accionar.
+function applyMyRole(role, silent) {
   state.previewRole = role;
-  document.getElementById("role-switcher-label").textContent = ROLES[role].label;
-  document.querySelectorAll(".rs-option").forEach(o => o.classList.toggle("active", o.dataset.role === role));
-  document.getElementById("role-switcher-menu").classList.remove("open");
   document.getElementById("notif-panel").classList.remove("open");
 
   const isAdmin = role === "admin";
   document.querySelectorAll('[data-admin-only="1"]').forEach(el => el.classList.toggle("hidden", !isAdmin));
   document.getElementById("nav-section-admin").classList.toggle("hidden", !isAdmin);
 
-  // Si la vista activa ya no está permitida para el rol de vista previa, regresa a inicio
+  // Si la vista activa ya no está permitida para el rol actual, regresa a inicio
   if (ADMIN_ONLY_MODULES.includes(currentModule) && !isAdmin) { switchModule("home"); }
 
   refreshPendingBadge();

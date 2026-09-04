@@ -53,13 +53,15 @@ El cupo se controla con `settings/app.secondAdminUid`: guarda el uid de esa segu
 | `usernames/{username}` | Directorio público (ver abajo): evita usuarios duplicados y permite la vista previa en la pantalla de login. |
 | `passwordResetRequests/{id}` | Solicitudes de "olvidé mi contraseña", pendientes de que el admin las atienda a mano (ver arriba). |
 | `items/{id}` | Artículos del inventario. |
+| `counters/inventario` | Un solo documento con el último número usado de cada código de artículo (TE-AUD-001, etc.), por departamento. Se actualiza con una transacción de Firestore al dar de alta un artículo, para que dos altas al mismo tiempo nunca puedan terminar con el mismo código. |
+| `loans/{id}` | Préstamos de equipo de la Mochila (artículo + cantidad, ligados o no a un evento). |
 | `events/{id}` | Eventos del calendario. |
 | `transactions/{id}` | Movimientos de la Billetera (ingresos/egresos). |
 | `notes/{id}` | Post-its de la Pizarra. |
 | `avisos/{id}` | Notificaciones de la campana (generales y dirigidas a una persona). |
 | `serviceNotices/{id}` | Avisos de servicio al Administrador (y su respuesta). |
 | `activityLog/{id}` | Historial de actividad. |
-| `settings/app` | Un solo documento con configuración global: modo mantenimiento, su mensaje, los textos editables de las pantallas de inicio de sesión y registro, si ya existe un Administrador (`adminBootstrapped`) y el uid del segundo Administrador si hay uno asignado (`secondAdminUid`). |
+| `settings/app` | Un solo documento con configuración global: permisos generales de Cooperador, modo mantenimiento y su mensaje, los textos editables de las pantallas de inicio de sesión y registro, si ya existe un Administrador (`adminBootstrapped`) y el uid del segundo Administrador si hay uno asignado (`secondAdminUid`). Es información pública (se lee sin haber iniciado sesión) para que la propia pantalla de login ya muestre el modo mantenimiento y los textos que puso el Administrador. |
 
 ### Por qué existe `usernames/{username}`, y por qué es público
 
@@ -79,6 +81,8 @@ Las reglas reproducen exactamente el sistema de permisos que ya construimos (la 
 - **Editor**: control total sobre Inventario y Calendario. No entra a Usuarios ni Billetera.
 - **Cooperador**: Inventario y Calendario según los permisos que el admin le configuró (generales o personalizados por persona) — igual que hoy.
 - **Lector**: solo lectura en todo.
+- **Mochila** (`loans`): hereda exactamente los mismos permisos que Inventario — quien puede editar el inventario puede agregar o quitar préstamos, quien puede eliminar en inventario puede quitarlos de la Mochila.
+- **Pizarra** (`notes`): cualquier cuenta activa puede dejar una nota; solo se puede quitar la propia, o cualquiera si eres Administrador.
 - **Billetera y Usuarios**: exclusivos del Administrador, sin excepción, para cualquier rol.
 - Una cuenta con estado `"pendiente"` no puede leer ni escribir nada más que su propio perfil, hasta que un admin la apruebe.
 

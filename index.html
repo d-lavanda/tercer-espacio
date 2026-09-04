@@ -2464,21 +2464,26 @@ const passwordResetRequests = [];
    aquí. Se muestran únicamente en la ventana de la campana 🔔 (sin
    ventanas emergentes ni canales externos como SMS/WhatsApp). `seenBy`
    guarda qué usuarios ya abrieron la campana después de que se creó, para
-   saber cuándo mostrar el punto rojo. */
+   saber cuándo mostrar el punto rojo. Viven en Firestore (colección
+   `avisos`) para que le lleguen a todo el mundo, no solo a quien está
+   viendo la pantalla en ese momento — ver attachAvisosListener más abajo. */
 const avisos = [];
-function pushAviso(type, text, targetUserId) {
-  avisos.unshift({ id: nextId(), type, text, createdBy: currentUser().id, targetUserId: targetUserId || null, createdAt: new Date().toISOString(), seenBy: [] });
-  if (avisos.length > 40) avisos.length = 40; // no crece sin límite en la demo
-  refreshPendingBadge();
+async function pushAviso(type, text, targetUserId) {
+  try {
+    await db.collection("avisos").add({ type, text, createdBy: currentUser().id, targetUserId: targetUserId || null, createdAt: new Date().toISOString(), seenBy: [] });
+  } catch (e) { console.error("[Tercer Espacio] Error creando aviso:", e); }
 }
 
 /* ---------- Modo mantenimiento (solo Administrador) ----------
    Mientras esté activo, cualquier intento de inicio de sesión que no sea
-   del Administrador ve la pantalla de mantenimiento en vez de la app. Al
-   no haber backend, esto vive solo en la memoria de esta pestaña: se
-   reinicia si se recarga la página. */
+   del Administrador ve la pantalla de mantenimiento en vez de la app.
+   Vive en settings/app (colección pública, ver firestore.rules) para que
+   el aviso y el mensaje se vean igual desde cualquier dispositivo, no
+   solo desde la pestaña de quien lo activó. Los valores de abajo son solo
+   el default de fábrica, antes de que exista ese documento o ese campo. */
+const DEFAULT_MAINTENANCE_MESSAGE = "Estamos en detox de gente — la página no está disponible por el momento. Vuelve pronto.";
 let maintenanceMode = false;
-let maintenanceMessage = "Estamos en detox de gente — la página no está disponible por el momento. Vuelve pronto.";
+let maintenanceMessage = DEFAULT_MAINTENANCE_MESSAGE;
 
 /* ---------- Avisos de servicio ----------
    Reportes o mensajes que cualquier integrante le deja al Administrador
@@ -2490,11 +2495,19 @@ const serviceNotices = [];
 /* ---------- Textos de bienvenida (login / registro) ----------
    Editables desde el Panel admin. La última palabra antes de una coma o
    un punto se resalta automáticamente (ver formatQuoteText) para que el
-   Administrador no tenga que escribir ningún código. */
-let authQuoteLoginTitle = "El arte necesita lugar,\nnosotros ponemos el espacio.";
-let authQuoteLoginSubtitle = "Sistema interno de gestión para el colectivo: inventario, agenda de eventos y control de fondos, todo en un mismo lugar.";
-let authQuoteRegisterTitle = "Súmate a la curaduría,\nconstruye comunidad.";
-let authQuoteRegisterSubtitle = "Tu solicitud será revisada por un administrador antes de darte acceso al sistema. Es rápido: solo necesitamos algunos datos.";
+   Administrador no tenga que escribir ningún código. También viven en
+   settings/app, por la misma razón que el modo mantenimiento: para que
+   cualquiera que abra la pantalla de inicio de sesión vea el texto que
+   puso el Administrador, no el texto de fábrica de abajo (que solo es el
+   default antes de que se guarde nada). */
+const DEFAULT_AUTH_QUOTE_LOGIN_TITLE = "El arte necesita lugar,\nnosotros ponemos el espacio.";
+const DEFAULT_AUTH_QUOTE_LOGIN_SUBTITLE = "Sistema interno de gestión para el colectivo: inventario, agenda de eventos y control de fondos, todo en un mismo lugar.";
+const DEFAULT_AUTH_QUOTE_REGISTER_TITLE = "Súmate a la curaduría,\nconstruye comunidad.";
+const DEFAULT_AUTH_QUOTE_REGISTER_SUBTITLE = "Tu solicitud será revisada por un administrador antes de darte acceso al sistema. Es rápido: solo necesitamos algunos datos.";
+let authQuoteLoginTitle = DEFAULT_AUTH_QUOTE_LOGIN_TITLE;
+let authQuoteLoginSubtitle = DEFAULT_AUTH_QUOTE_LOGIN_SUBTITLE;
+let authQuoteRegisterTitle = DEFAULT_AUTH_QUOTE_REGISTER_TITLE;
+let authQuoteRegisterSubtitle = DEFAULT_AUTH_QUOTE_REGISTER_SUBTITLE;
 
 // Devuelve el usuario con ese id. Si el id es null/undefined (nadie ha
 // iniciado sesión), regresa undefined, como antes. Si el id SÍ existe pero
@@ -2510,29 +2523,26 @@ function findUser(id) {
 }
 function currentUser() { return findUser(state.currentUserId); }
 
-/* ---------- Datos de ejemplo: inventario ---------- */
+/* ---------- Inventario ---------- */
+// Copia local (de solo lectura) del contador de códigos por departamento,
+// sincronizada en vivo desde counters/inventario — ver
+// attachCountersListener. Solo sirve para la VISTA PREVIA del código en el
+// formulario; el número real se reserva de forma atómica al guardar (ver
+// reserveItemCode), con una transacción de Firestore, para que dos altas
+// al mismo tiempo nunca puedan terminar con el mismo código.
 let deptCounters = { Audio: 0, Mobiliario: 0, Arte: 0, Electricidad: 0 };
 const DEPT_ABBR = { Audio: "AUD", Mobiliario: "MOB", Arte: "ART", Electricidad: "ELE" };
-// Genera y RESERVA el siguiente código para `dept`, verificando contra todos
-// los códigos existentes para que dos altas nunca puedan terminar con el
-// mismo identificador (protección ante condición de carrera / doble alta).
-function codeFor(dept) {
-  const abbr = DEPT_ABBR[dept] || "GEN";
-  let code;
-  do { deptCounters[dept]++; code = `TE-${abbr}-${String(deptCounters[dept]).padStart(3,"0")}`; }
-  while (items.some(i => i.code === code));
-  return code;
-}
 // Solo para VISTA PREVIA en el formulario (no reserva el número).
 function peekNextCode(dept) {
   const abbr = DEPT_ABBR[dept] || "GEN";
-  let n = deptCounters[dept] + 1;
+  let n = (deptCounters[dept] || 0) + 1;
   let code = `TE-${abbr}-${String(n).padStart(3,"0")}`;
   while (items.some(i => i.code === code)) { n++; code = `TE-${abbr}-${String(n).padStart(3,"0")}`; }
   return code;
 }
 // Arranca vacío a propósito: nada de inventario de ejemplo en la página
-// real. Se llena según el colectivo va dando de alta artículos.
+// real. Se llena según el colectivo va dando de alta artículos, y se
+// mantiene sincronizado con Firestore — ver attachItemsListener.
 const items = [];
 
 /* ---------- Contabilidad de estados por artículo ---------- */
@@ -2545,17 +2555,20 @@ function availableQtyFor(item, excludeEventId) {
 }
 
 /* ---------- Eventos ----------
-   Arranca vacío a propósito: nada de eventos de ejemplo en la página real. */
+   Arranca vacío a propósito: nada de eventos de ejemplo en la página real.
+   Sincronizado con Firestore — ver attachEventsListener. */
 const events = [];
 
-/* ---------- Mochila: préstamos de equipo (artículo + cantidad, ligados o no a un evento) ---------- */
+/* ---------- Mochila: préstamos de equipo (artículo + cantidad, ligados o no a un evento) ----------
+   Sincronizado con Firestore (colección `loans`) — ver attachLoansListener. */
 function itemByName(name) { return items.find(i => i.name === name); }
 const loans = [];
 function loansForEvent(eventId) { return loans.filter(l => l.eventId === eventId); }
 function loansUnassigned() { return loans.filter(l => l.eventId === null); }
-function removeLoansForEvent(eventId) {
-  for (let i = loans.length - 1; i >= 0; i--) if (loans[i].eventId === eventId) loans.splice(i, 1);
-}
+// Antes había un removeLoansForEvent() que vaciaba `loans` en memoria; con
+// Firestore eso se hace como parte del mismo lote (batch) que guarda o
+// elimina el evento — ver saveEvent() y confirmDeleteEvent() en la sección
+// de Calendario, para que el evento y sus préstamos cambien siempre juntos.
 function totalActiveLoanQty() { return loans.reduce((s,l) => s + l.qty, 0); }
 
 /* ---------- Utilidad: describir cambios de campo para el historial ---------- */
@@ -2571,14 +2584,20 @@ function diffFields(oldObj, newVals, labels) {
 }
 
 /* ---------- Movimientos de billetera ----------
-   Arranca vacío a propósito: nada de movimientos de ejemplo. */
+   Arranca vacío a propósito: nada de movimientos de ejemplo. Vive en la
+   colección `transactions` de Firestore — ver attachWtxListener. */
 const wtx = [];
 
 /* ---------- Historial de actividad ----------
-   Arranca vacío a propósito: nada de historial de ejemplo. */
+   Arranca vacío a propósito: nada de historial de ejemplo. Cada entrada
+   se guarda en Firestore para que el historial sea el mismo para
+   cualquier Administrador, no solo para quien hizo la acción — ver
+   attachActivityLogListener. */
 const activityLog = [];
-function logActivity(module, html) {
-  activityLog.unshift({ id: nextId(), module, text: html, date: new Date().toISOString() });
+async function logActivity(module, html) {
+  try {
+    await db.collection("activityLog").add({ module, text: html, date: new Date().toISOString() });
+  } catch (e) { console.error("[Tercer Espacio] Error registrando actividad:", e); }
 }
 
 /* ---------- Utilidades generales ---------- */
@@ -2825,30 +2844,183 @@ let myProfile = null;
 // apenas se está registrando.
 let suppressAuthHandler = false;
 let unsubUsers = null, unsubPasswordResets = null, unsubAppSettings = null;
+let unsubItems = null, unsubLoans = null, unsubCounters = null, unsubEvents = null, unsubWtx = null,
+    unsubNotes = null, unsubAvisosGeneral = null, unsubAvisosMine = null, unsubServiceNotices = null,
+    unsubActivityLog = null;
+let _avisosGeneralSnap = null, _avisosMineSnap = null;
 
 function detachAllFirestoreListeners() {
   if (unsubUsers) { unsubUsers(); unsubUsers = null; }
   if (unsubPasswordResets) { unsubPasswordResets(); unsubPasswordResets = null; }
-  if (unsubAppSettings) { unsubAppSettings(); unsubAppSettings = null; }
+  if (unsubItems) { unsubItems(); unsubItems = null; }
+  if (unsubLoans) { unsubLoans(); unsubLoans = null; }
+  if (unsubCounters) { unsubCounters(); unsubCounters = null; }
+  if (unsubEvents) { unsubEvents(); unsubEvents = null; }
+  if (unsubWtx) { unsubWtx(); unsubWtx = null; }
+  if (unsubNotes) { unsubNotes(); unsubNotes = null; }
+  if (unsubAvisosGeneral) { unsubAvisosGeneral(); unsubAvisosGeneral = null; }
+  if (unsubAvisosMine) { unsubAvisosMine(); unsubAvisosMine = null; }
+  if (unsubServiceNotices) { unsubServiceNotices(); unsubServiceNotices = null; }
+  if (unsubActivityLog) { unsubActivityLog(); unsubActivityLog = null; }
   users = [];
   pendingUsers = [];
   passwordResetRequests.length = 0;
-  state.secondAdminUid = null;
+  items.length = 0;
+  loans.length = 0;
+  events.length = 0;
+  wtx.length = 0;
+  boardNotes.length = 0;
+  avisos.length = 0;
+  serviceNotices.length = 0;
+  activityLog.length = 0;
+  _avisosGeneralSnap = null; _avisosMineSnap = null;
+  // settings/app (permisos generales, segundo admin, mantenimiento, textos
+  // de login/registro) NO se reinicia aquí: es información pública que
+  // sigue viva antes y después de iniciar sesión — ver más abajo, se
+  // conecta una sola vez y nunca se desconecta.
 }
 
-// Mantiene en vivo settings/app: los permisos generales de Cooperador
-// y quién es (si existe) el segundo Administrador. Antes esto solo se
-// leía una vez al arrancar el prototipo local; con Firestore real hace
-// falta un listener para que un cambio hecho desde otra sesión (por
-// ejemplo, otro Administrador) se refleje sin tener que recargar.
+// Mantiene en vivo settings/app: los permisos generales de Cooperador,
+// quién es (si existe) el segundo Administrador, el modo mantenimiento y
+// los textos editables de las pantallas de inicio de sesión y registro.
+// Es información pública (ver firestore.rules: allow read: if true), así
+// que este listener se conecta una sola vez, ANTES de iniciar sesión —
+// para que la pantalla de login ya muestre el texto que puso el
+// Administrador y el aviso de mantenimiento — y se queda conectado
+// siempre, con o sin sesión.
 function attachAppSettingsListener() {
   if (unsubAppSettings) return;
   unsubAppSettings = db.collection("settings").doc("app").onSnapshot((doc) => {
     const data = doc.exists ? doc.data() : {};
     state.coopPerms = Object.assign({ invEdit: true, invDelete: false, calEdit: true, calDelete: false }, data.coopPerms || {});
     state.secondAdminUid = data.secondAdminUid || null;
+    maintenanceMode = data.maintenanceMode || false;
+    maintenanceMessage = data.maintenanceMessage || DEFAULT_MAINTENANCE_MESSAGE;
+    authQuoteLoginTitle = data.authQuoteLoginTitle || DEFAULT_AUTH_QUOTE_LOGIN_TITLE;
+    authQuoteLoginSubtitle = data.authQuoteLoginSubtitle || DEFAULT_AUTH_QUOTE_LOGIN_SUBTITLE;
+    authQuoteRegisterTitle = data.authQuoteRegisterTitle || DEFAULT_AUTH_QUOTE_REGISTER_TITLE;
+    authQuoteRegisterSubtitle = data.authQuoteRegisterSubtitle || DEFAULT_AUTH_QUOTE_REGISTER_SUBTITLE;
+    if (typeof applyAuthQuoteTexts === "function") applyAuthQuoteTexts();
+    if (document.getElementById("maintenance-toggle")) document.getElementById("maintenance-toggle").checked = maintenanceMode;
     if (document.body.classList.contains("app-active")) renderCurrentModule();
   }, (err) => console.error("[Tercer Espacio] Error escuchando la configuración general:", err));
+}
+
+/* ---------- Historial de actividad ---------- */
+function attachActivityLogListener() {
+  if (unsubActivityLog) return;
+  unsubActivityLog = db.collection("activityLog").orderBy("date", "desc").limit(300).onSnapshot((snap) => {
+    activityLog.length = 0;
+    snap.forEach((doc) => activityLog.push(Object.assign({ id: doc.id }, doc.data())));
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando el historial:", err));
+}
+
+/* ---------- Inventario: contador de códigos (TE-AUD-001, etc.) ---------- */
+function attachCountersListener() {
+  if (unsubCounters) return;
+  unsubCounters = db.collection("counters").doc("inventario").onSnapshot((doc) => {
+    deptCounters = Object.assign({ Audio: 0, Mobiliario: 0, Arte: 0, Electricidad: 0 }, doc.exists ? doc.data() : {});
+  }, (err) => console.error("[Tercer Espacio] Error escuchando los contadores de inventario:", err));
+}
+// Reserva, de forma atómica (transacción de Firestore), el siguiente
+// código para `dept` — así dos personas dando de alta un artículo al
+// mismo tiempo nunca terminan con el mismo código.
+function reserveItemCode(dept) {
+  const abbr = DEPT_ABBR[dept] || "GEN";
+  const ref = db.collection("counters").doc("inventario");
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists ? snap.data() : {};
+    const next = (data[dept] || 0) + 1;
+    tx.set(ref, { [dept]: next }, { merge: true });
+    return `TE-${abbr}-${String(next).padStart(3,"0")}`;
+  });
+}
+
+/* ---------- Inventario y Mochila ---------- */
+function attachItemsListener() {
+  if (unsubItems) return;
+  unsubItems = db.collection("items").onSnapshot((snap) => {
+    items.length = 0;
+    snap.forEach((doc) => items.push(Object.assign({ id: doc.id }, doc.data())));
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando el inventario:", err));
+}
+function attachLoansListener() {
+  if (unsubLoans) return;
+  unsubLoans = db.collection("loans").onSnapshot((snap) => {
+    loans.length = 0;
+    snap.forEach((doc) => loans.push(Object.assign({ id: doc.id }, doc.data())));
+    refreshMochilaBadges();
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando la mochila:", err));
+}
+
+/* ---------- Calendario ---------- */
+function attachEventsListener() {
+  if (unsubEvents) return;
+  unsubEvents = db.collection("events").onSnapshot((snap) => {
+    events.length = 0;
+    snap.forEach((doc) => events.push(Object.assign({ id: doc.id }, doc.data())));
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando el calendario:", err));
+}
+
+/* ---------- Billetera ---------- */
+function attachWtxListener() {
+  if (unsubWtx) return;
+  unsubWtx = db.collection("transactions").onSnapshot((snap) => {
+    wtx.length = 0;
+    snap.forEach((doc) => wtx.push(Object.assign({ id: doc.id }, doc.data())));
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando la billetera:", err));
+}
+
+/* ---------- Pizarra ---------- */
+function attachNotesListener() {
+  if (unsubNotes) return;
+  unsubNotes = db.collection("notes").onSnapshot((snap) => {
+    boardNotes.length = 0;
+    snap.forEach((doc) => boardNotes.push(Object.assign({ id: doc.id }, doc.data())));
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando la pizarra:", err));
+}
+
+/* ---------- Avisos (campana) ----------
+   Las reglas de seguridad solo permiten leer un aviso si es general
+   (targetUserId nulo) o dirigido a mí — y Firestore exige que la
+   consulta misma quede acotada a eso, así que se usan dos escuchas por
+   separado (generales / dirigidos a mí) y se combinan en el arreglo
+   local `avisos`. */
+function _mergeAvisos() {
+  const list = [];
+  if (_avisosGeneralSnap) _avisosGeneralSnap.forEach((doc) => list.push(Object.assign({ id: doc.id }, doc.data())));
+  if (_avisosMineSnap) _avisosMineSnap.forEach((doc) => list.push(Object.assign({ id: doc.id }, doc.data())));
+  list.sort((a,b) => (b.createdAt||"").localeCompare(a.createdAt||""));
+  avisos.length = 0;
+  avisos.push(...list.slice(0, 60));
+  refreshPendingBadge();
+}
+function attachAvisosListener() {
+  if (unsubAvisosGeneral) return;
+  unsubAvisosGeneral = db.collection("avisos").where("targetUserId", "==", null).onSnapshot((snap) => {
+    _avisosGeneralSnap = snap; _mergeAvisos();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando avisos generales:", err));
+  unsubAvisosMine = db.collection("avisos").where("targetUserId", "==", myProfile.id).onSnapshot((snap) => {
+    _avisosMineSnap = snap; _mergeAvisos();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando tus avisos:", err));
+}
+
+/* ---------- Avisos de servicio al Administrador ---------- */
+function attachServiceNoticesListener() {
+  if (unsubServiceNotices) return;
+  unsubServiceNotices = db.collection("serviceNotices").onSnapshot((snap) => {
+    serviceNotices.length = 0;
+    snap.forEach((doc) => serviceNotices.push(Object.assign({ id: doc.id }, doc.data())));
+    refreshPendingBadge();
+    if (document.body.classList.contains("app-active")) renderCurrentModule();
+  }, (err) => console.error("[Tercer Espacio] Error escuchando avisos de servicio:", err));
 }
 
 // Mantiene `users`/`pendingUsers` reflejando en vivo la colección
@@ -2904,7 +3076,15 @@ async function enterAppAsUser(uid, data) {
   }
   attachUsersListener();
   attachPasswordResetListener();
-  attachAppSettingsListener();
+  attachItemsListener();
+  attachLoansListener();
+  attachCountersListener();
+  attachEventsListener();
+  attachWtxListener();
+  attachNotesListener();
+  attachAvisosListener();
+  attachServiceNoticesListener();
+  attachActivityLogListener();
   bootApp();
 }
 
@@ -2912,6 +3092,14 @@ async function enterAppAsUser(uid, data) {
 // y una vez sola al cargar la página si el navegador ya tenía una
 // sesión guardada (así no hay que volver a escribir usuario/contraseña
 // cada vez que se recarga).
+// settings/app es información pública (modo mantenimiento, textos de
+// login/registro, permisos generales): se conecta de una vez, sin
+// esperar a que alguien inicie sesión, para que la propia pantalla de
+// inicio de sesión ya refleje lo último que puso el Administrador.
+if (firebaseReady) {
+  attachAppSettingsListener();
+}
+
 if (firebaseReady) {
   auth.onAuthStateChanged(async (fbUser) => {
     if (suppressAuthHandler) return;
@@ -3051,6 +3239,27 @@ function fileToSquareDataURL(file, size, cb) {
       const sx = (img.width - side) / 2, sy = (img.height - side) / 2;
       ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
       cb(canvas.toDataURL("image/jpeg", 0.9));
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+// Como fileToSquareDataURL, pero sin recortar a cuadrado (para flyers,
+// que suelen ser verticales): reduce el lado más largo a `maxDim` como
+// máximo. Necesario porque las fotos ahora se guardan en Firestore
+// (dentro del propio documento del evento), que tiene un límite de 1 MB
+// por documento — una foto de cámara sin comprimir lo supera fácilmente.
+function fileToBoundedDataURL(file, maxDim, cb) {
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale)), h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement("canvas");
+      canvas.width = w; canvas.height = h;
+      canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+      cb(canvas.toDataURL("image/jpeg", 0.85));
     };
     img.src = ev.target.result;
   };
@@ -3372,8 +3581,12 @@ function openNotifPanel() {
   toggleDropdown("notif-panel");
   if (willOpen) {
     const u = currentUser();
-    avisos.forEach(a => { if (a.createdBy !== u.id && !a.seenBy.includes(u.id)) a.seenBy.push(u.id); });
-    refreshPendingBadge();
+    avisos.forEach(a => {
+      if (a.createdBy !== u.id && !a.seenBy.includes(u.id)) {
+        db.collection("avisos").doc(a.id).update({ seenBy: [...a.seenBy, u.id] })
+          .catch(err => console.error("[Tercer Espacio] Error marcando aviso como visto:", err));
+      }
+    });
   }
 }
 
@@ -3480,7 +3693,7 @@ function renderInventory() {
     if (i.repair > 0) stateBits.push(`<span class="state-chip state-repair">${i.repair} reparación</span>`);
     if (i.retired > 0) stateBits.push(`<span class="state-chip state-retired">${i.retired} de baja</span>`);
     return `
-    <div class="item-card" onclick="showItemDetail(${i.id})">
+    <div class="item-card" onclick="showItemDetail('${i.id}')">
       <div class="item-card-thumb">
         ${i.photo ? `<img src="${i.photo}" alt="">` : `<svg width="46" height="46" viewBox="0 0 24 24" fill="none" style="color:var(--ink-disabled);">${DEPT_ICON[i.dept]||''}</svg>`}
         <span class="qty-badge">${avail} disp.</span>
@@ -3565,7 +3778,7 @@ function openItemModal(editId) {
   if (itemPhotoData) { img.src = itemPhotoData; img.classList.remove("hidden"); } else { img.classList.add("hidden"); }
   openModal("modal-item");
 }
-function saveItem() {
+async function saveItem() {
   const name = document.getElementById("item-name").value.trim();
   const qty = parseInt(document.getElementById("item-qty").value, 10) || 0;
   const dept = document.getElementById("item-department").value;
@@ -3576,22 +3789,23 @@ function saveItem() {
   if (!name) return toast("Ingresa el nombre del artículo.", "bad");
   if (!tag) return toast("Selecciona o agrega una etiqueta.", "bad");
 
-  if (state.editingItemId) {
-    const item = items.find(i => i.id === state.editingItemId);
-    const changes = diffFields(item, { name, qty, dept, tag, desc, repair, retired }, {
-      name: "nombre", qty: "cantidad total", dept: "departamento", tag: "etiqueta", repair: "en reparación", retired: "de baja"
-    });
-    Object.assign(item, { name, qty, dept, tag, desc, repair, retired, photo: itemPhotoData });
-    logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> editó <b>"${escapeHtml(name)}"</b> en el inventario${changes ? ` — ${changes}` : ""}`);
-    toast("Artículo actualizado.", "good");
-  } else {
-    const code = codeFor(dept);
-    items.unshift({ id: nextId(), name, qty, dept, tag, code, desc, repair, retired, photo: itemPhotoData });
-    logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> agregó <b>"${escapeHtml(name)}"</b> al inventario`);
-    toast("Artículo agregado al inventario.", "good");
-  }
-  closeModal("modal-item");
-  renderInventoryFilters(); renderInventory();
+  try {
+    if (state.editingItemId) {
+      const item = items.find(i => i.id === state.editingItemId);
+      const changes = diffFields(item, { name, qty, dept, tag, desc, repair, retired }, {
+        name: "nombre", qty: "cantidad total", dept: "departamento", tag: "etiqueta", repair: "en reparación", retired: "de baja"
+      });
+      await db.collection("items").doc(item.id).update({ name, qty, dept, tag, desc, repair, retired, photo: itemPhotoData });
+      logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> editó <b>"${escapeHtml(name)}"</b> en el inventario${changes ? ` — ${changes}` : ""}`);
+      toast("Artículo actualizado.", "good");
+    } else {
+      const code = await reserveItemCode(dept);
+      await db.collection("items").add({ name, qty, dept, tag, code, desc, repair, retired, photo: itemPhotoData });
+      logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> agregó <b>"${escapeHtml(name)}"</b> al inventario`);
+      toast("Artículo agregado al inventario.", "good");
+    }
+    closeModal("modal-item");
+  } catch (e) { console.error(e); toast("No se pudo guardar el artículo. Intenta de nuevo.", "bad"); }
 }
 function showItemDetail(id) {
   const item = items.find(i => i.id === id);
@@ -3621,8 +3835,8 @@ function showItemDetail(id) {
       ${itemLoans.map(l => { const ev = events.find(e=>e.id===l.eventId); return `<div class="flex justify-between" style="font-size:13px; padding:6px 0; border-top:1px solid var(--border-hairline);"><span>${ev ? escapeHtml(ev.name) : "Sin evento asignado"}</span><b>${l.qty} und.</b></div>`; }).join("")}
     </div>` : ""}`;
   document.getElementById("item-detail-actions").innerHTML = `
-    ${canDelete ? `<button class="btn btn-danger" onclick="confirmDeleteItem(${item.id})">Eliminar</button>` : ""}
-    ${canEdit ? `<button class="btn btn-primary" onclick="closeModal('modal-item-detail'); openItemModal(${item.id})">Editar</button>` : ""}
+    ${canDelete ? `<button class="btn btn-danger" onclick="confirmDeleteItem('${item.id}')">Eliminar</button>` : ""}
+    ${canEdit ? `<button class="btn btn-primary" onclick="closeModal('modal-item-detail'); openItemModal('${item.id}')">Editar</button>` : ""}
     <button class="btn btn-secondary" onclick="closeModal('modal-item-detail')">Cerrar</button>`;
   openModal("modal-item-detail");
 }
@@ -3630,16 +3844,18 @@ function confirmDeleteItem(id) {
   const item = items.find(i => i.id === id);
   document.getElementById("confirm-title").textContent = "¿Eliminar artículo?";
   document.getElementById("confirm-text").textContent = `Se eliminará "${item.name}" del inventario. Podrás deshacerlo unos segundos después.`;
-  document.getElementById("confirm-action-btn").onclick = () => {
-    const idx = items.findIndex(i=>i.id===id);
-    const [removed] = items.splice(idx, 1);
-    logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó <b>"${escapeHtml(item.name)}"</b> del inventario`);
-    closeModal("modal-confirm"); closeModal("modal-item-detail");
-    renderInventoryFilters(); renderInventory();
-    showUndoToast(`"${removed.name}" fue eliminado.`, () => {
-      items.splice(idx, 0, removed);
-      renderInventoryFilters(); renderInventory();
-    });
+  document.getElementById("confirm-action-btn").onclick = async () => {
+    try {
+      await db.collection("items").doc(id).delete();
+      logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó <b>"${escapeHtml(item.name)}"</b> del inventario`);
+      closeModal("modal-confirm"); closeModal("modal-item-detail");
+      showUndoToast(`"${item.name}" fue eliminado.`, async () => {
+        try {
+          const { id: _omit, ...data } = item;
+          await db.collection("items").doc(id).set(data);
+        } catch (err) { console.error(err); toast("No se pudo deshacer. Intenta de nuevo.", "bad"); }
+      });
+    } catch (err) { console.error(err); toast("No se pudo eliminar el artículo. Intenta de nuevo.", "bad"); }
   };
   openModal("modal-confirm");
 }
@@ -3673,10 +3889,10 @@ function renderMochila() {
         return `<div class="loan-row">
           <div class="loan-row-name"><b>${escapeHtml(item.name)}</b><span>${item.code}</span></div>
           ${canEdit ? `<div class="loan-qty-stepper">
-            <button onclick="changeLoanQty(${l.id}, -1)">−</button><b>${l.qty}</b><button onclick="changeLoanQty(${l.id}, 1)">+</button>
+            <button onclick="changeLoanQty('${l.id}', -1)">−</button><b>${l.qty}</b><button onclick="changeLoanQty('${l.id}', 1)">+</button>
           </div>` : `<div class="loan-qty-stepper"><b>${l.qty} und.</b></div>`}
           <div class="loan-meta">${addedBy ? escapeHtml(addedBy.fullName.split(" ")[0]) : "—"} · ${relTime(l.addedAt)}</div>
-          ${canEdit ? `<button class="btn-icon btn-sm" title="Quitar de la mochila" onclick="removeLoan(${l.id})">✕</button>` : ""}
+          ${canEdit ? `<button class="btn-icon btn-sm" title="Quitar de la mochila" onclick="removeLoan('${l.id}')">✕</button>` : ""}
         </div>`;
       }).join("")}
     </div>`;
@@ -3697,7 +3913,7 @@ function populateLoanEventSelect() {
   sel.innerHTML = `<option value="">Sin evento — préstamo general</option>` + events.map(e => `<option value="${e.id}">${escapeHtml(e.name)} (${fmtDate(e.date,{short:true})})</option>`).join("");
 }
 function onLoanItemChange() {
-  const item = items.find(i => i.id === Number(document.getElementById("loan-item").value));
+  const item = items.find(i => i.id === document.getElementById("loan-item").value);
   const avail = item ? availableQtyFor(item) : 0;
   document.getElementById("loan-item-avail").textContent = `(${avail} disponibles)`;
   document.getElementById("loan-qty").max = avail;
@@ -3709,41 +3925,46 @@ function openLoanModal() {
   document.getElementById("loan-qty").value = 1;
   openModal("modal-loan");
 }
-function saveLoan() {
-  const itemId = Number(document.getElementById("loan-item").value);
+async function saveLoan() {
+  const itemId = document.getElementById("loan-item").value;
   const qty = parseInt(document.getElementById("loan-qty").value, 10) || 0;
-  const eventId = document.getElementById("loan-event").value ? Number(document.getElementById("loan-event").value) : null;
+  const eventId = document.getElementById("loan-event").value || null;
   const item = items.find(i => i.id === itemId);
   if (!item) return toast("Selecciona un artículo.", "bad");
   if (qty < 1) return toast("Indica una cantidad válida.", "bad");
   if (qty > availableQtyFor(item)) return toast(`Solo hay ${availableQtyFor(item)} disponibles de "${item.name}".`, "bad");
-  loans.push({ id: nextId(), itemId, qty, eventId, addedBy: currentUser().id, addedAt: new Date().toISOString() });
-  const ev = eventId ? events.find(e=>e.id===eventId) : null;
-  logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> agregó <b>${qty} × ${escapeHtml(item.name)}</b> a la mochila${ev ? ` para "${escapeHtml(ev.name)}"` : ""}`);
-  closeModal("modal-loan");
-  renderMochila(); renderInventory();
-  toast("Préstamo agregado a la mochila.", "good");
+  try {
+    await db.collection("loans").add({ itemId, qty, eventId, addedBy: currentUser().id, addedAt: new Date().toISOString() });
+    const ev = eventId ? events.find(e=>e.id===eventId) : null;
+    logActivity("inventario", `<b>${escapeHtml(currentUser().fullName)}</b> agregó <b>${qty} × ${escapeHtml(item.name)}</b> a la mochila${ev ? ` para "${escapeHtml(ev.name)}"` : ""}`);
+    closeModal("modal-loan");
+    toast("Préstamo agregado a la mochila.", "good");
+  } catch (e) { console.error(e); toast("No se pudo agregar el préstamo. Intenta de nuevo.", "bad"); }
 }
-function changeLoanQty(id, delta) {
+async function changeLoanQty(id, delta) {
   const l = loans.find(l => l.id === id);
   if (!l) return;
   const item = items.find(i => i.id === l.itemId);
   const maxAvail = availableQtyFor(item) + l.qty; // el propio préstamo no cuenta como "ocupado" para sí mismo
   const next = clamp(l.qty + delta, 1, maxAvail);
   if (next === l.qty) { if (delta > 0) toast("No hay más unidades disponibles.", "bad"); return; }
-  l.qty = next;
-  renderMochila(); renderInventory();
+  try {
+    await db.collection("loans").doc(id).update({ qty: next });
+  } catch (e) { console.error(e); toast("No se pudo actualizar la cantidad. Intenta de nuevo.", "bad"); }
 }
-function removeLoan(id) {
-  const idx = loans.findIndex(l => l.id === id);
-  if (idx === -1) return;
-  const [removed] = loans.splice(idx, 1);
-  const item = items.find(i => i.id === removed.itemId);
-  renderMochila(); renderInventory();
-  showUndoToast(`Se quitó "${item ? item.name : 'artículo'}" de la mochila.`, () => {
-    loans.splice(idx, 0, removed);
-    renderMochila(); renderInventory();
-  });
+async function removeLoan(id) {
+  const loan = loans.find(l => l.id === id);
+  if (!loan) return;
+  const item = items.find(i => i.id === loan.itemId);
+  try {
+    await db.collection("loans").doc(id).delete();
+    showUndoToast(`Se quitó "${item ? item.name : 'artículo'}" de la mochila.`, async () => {
+      try {
+        const { id: _omit, ...data } = loan;
+        await db.collection("loans").doc(id).set(data);
+      } catch (err) { console.error(err); toast("No se pudo deshacer. Intenta de nuevo.", "bad"); }
+    });
+  } catch (e) { console.error(e); toast("No se pudo quitar de la mochila. Intenta de nuevo.", "bad"); }
 }
 
 /* ================= CALENDARIO ================= */
@@ -3802,7 +4023,7 @@ function renderCalGrid() {
     return `<div class="cal-day ${isToday?'is-today':''}">
       <span class="day-num">${c.day}</span>
       <div class="cal-day-events">
-        ${shown.map(e => `<div class="cal-event-pill" style="background:${EVENT_CATEGORIES[e.category]}22; color:${EVENT_CATEGORIES[e.category]}; border-color:${EVENT_CATEGORIES[e.category]};" onclick="showEventDetail(${e.id})" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</div>`).join("")}
+        ${shown.map(e => `<div class="cal-event-pill" style="background:${EVENT_CATEGORIES[e.category]}22; color:${EVENT_CATEGORIES[e.category]}; border-color:${EVENT_CATEGORIES[e.category]};" onclick="showEventDetail('${e.id}')" title="${escapeHtml(e.name)}">${escapeHtml(e.name)}</div>`).join("")}
         ${more > 0 ? `<div class="cal-more-pill" onclick="setCalView('agenda')">+${more} más</div>` : ""}
       </div>
     </div>`;
@@ -3818,7 +4039,7 @@ function agendaRowHTML(e) {
   const d = new Date(e.date+"T00:00:00");
   const color = EVENT_CATEGORIES[e.category];
   const hasEquip = loansForEvent(e.id).length > 0;
-  return `<div class="agenda-item" onclick="showEventDetail(${e.id})">
+  return `<div class="agenda-item" onclick="showEventDetail('${e.id}')">
     <div class="agenda-date-block" style="background:${color}22; color:${color};"><span class="ad-day">${d.getDate()}</span><span class="ad-mon">${MONTHS_ES_SHORT[d.getMonth()]}</span></div>
     <div style="flex:1;">
       <div class="agenda-title">${escapeHtml(e.name)}</div>
@@ -3859,7 +4080,7 @@ function renderLoanPicker() {
     return `<div class="loan-picker-row">
       <div class="loan-picker-row-name">${escapeHtml(i.name)}<span>${maxAvail} disponibles</span></div>
       <div class="loan-qty-stepper">
-        <button type="button" onclick="setLoanDraftQty(${i.id}, ${qty-1}, ${maxAvail})">−</button><b>${qty}</b><button type="button" onclick="setLoanDraftQty(${i.id}, ${qty+1}, ${maxAvail})">+</button>
+        <button type="button" onclick="setLoanDraftQty('${i.id}', ${qty-1}, ${maxAvail})">−</button><b>${qty}</b><button type="button" onclick="setLoanDraftQty('${i.id}', ${qty+1}, ${maxAvail})">+</button>
       </div>
     </div>`;
   }).join("") : `<p class="text-muted" style="font-size:12.5px; padding:12px;">Sin artículos en este departamento.</p>`;
@@ -3880,15 +4101,13 @@ function renderLoanPickerSummary() {
 let eventFlyerData = null;
 document.getElementById("event-flyer-input").addEventListener("change", (e) => {
   const file = e.target.files[0]; if (!file) return;
-  const reader = new FileReader();
-  reader.onload = (ev) => {
-    eventFlyerData = ev.target.result;
+  fileToBoundedDataURL(file, 900, (dataUrl) => {
+    eventFlyerData = dataUrl;
     const img = document.getElementById("event-flyer-preview");
     img.src = eventFlyerData; img.classList.remove("hidden");
     document.getElementById("event-flyer-icon").classList.add("hidden");
     document.getElementById("event-flyer-remove-btn").classList.remove("hidden");
-  };
-  reader.readAsDataURL(file);
+  });
 });
 function removeEventFlyer() {
   eventFlyerData = null;
@@ -3974,7 +4193,7 @@ function openEventModal(editId) {
   renderParticipantsList();
   openModal("modal-event");
 }
-function saveEvent() {
+async function saveEvent() {
   const name = document.getElementById("event-name").value.trim();
   const desc = document.getElementById("event-desc").value.trim();
   const date = document.getElementById("event-date").value;
@@ -3985,28 +4204,44 @@ function saveEvent() {
   if (!name) return toast("Ingresa el nombre del evento.", "bad");
   if (!date) return toast("Selecciona la fecha del evento.", "bad");
 
-  let eventId;
-  if (state.editingEventId) {
-    const ev = events.find(e => e.id === state.editingEventId);
-    eventId = ev.id;
-    const changes = diffFields(ev, { name, date, category, timeStart, timeEnd }, {
-      name: "nombre", date: "fecha", category: "categoría", timeStart: "hora de inicio", timeEnd: "hora de fin"
+  const eventData = { name, desc, date, category, timeStart, timeEnd, flyer: eventFlyerData, participants: state.eventParticipantsDraft };
+  const isNew = !state.editingEventId;
+  let changes = "";
+  try {
+    const batch = db.batch();
+    let eventId, eventRef;
+    if (!isNew) {
+      const ev = events.find(e => e.id === state.editingEventId);
+      eventId = ev.id;
+      eventRef = db.collection("events").doc(eventId);
+      changes = diffFields(ev, { name, date, category, timeStart, timeEnd }, {
+        name: "nombre", date: "fecha", category: "categoría", timeStart: "hora de inicio", timeEnd: "hora de fin"
+      });
+      batch.update(eventRef, eventData);
+    } else {
+      eventRef = db.collection("events").doc();
+      eventId = eventRef.id;
+      batch.set(eventRef, eventData);
+    }
+    // Reemplaza por completo los préstamos de este evento en la Mochila:
+    // se quitan los que tenía y se agregan los del borrador actual, en el
+    // mismo lote que el evento — para que quede todo o nada.
+    loansForEvent(eventId).forEach(l => batch.delete(db.collection("loans").doc(l.id)));
+    loanDraft.forEach(d => {
+      const loanRef = db.collection("loans").doc();
+      batch.set(loanRef, { itemId: d.itemId, qty: d.qty, eventId, addedBy: currentUser().id, addedAt: new Date().toISOString() });
     });
-    Object.assign(ev, { name, desc, date, category, timeStart, timeEnd, flyer: eventFlyerData, participants: state.eventParticipantsDraft });
-    logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> editó el evento <b>"${escapeHtml(name)}"</b>${changes ? ` — ${changes}` : ""}`);
-    toast("Evento actualizado.", "good");
-  } else {
-    eventId = nextId();
-    events.push({ id: eventId, name, desc, date, category, timeStart, timeEnd, flyer: eventFlyerData, participants: state.eventParticipantsDraft });
-    logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> creó el evento <b>"${escapeHtml(name)}"</b>`);
-    toast("Evento agendado.", "good");
-    pushAviso("evento", `Nuevo evento: "${name}" · ${fmtDate(date,{long:true})} · ${timeStart}–${timeEnd}`);
-  }
-  removeLoansForEvent(eventId);
-  loanDraft.forEach(d => loans.push({ id: nextId(), itemId: d.itemId, qty: d.qty, eventId, addedBy: currentUser().id, addedAt: new Date().toISOString() }));
-  closeModal("modal-event");
-  renderCalendar();
-  refreshMochilaBadges();
+    await batch.commit();
+    if (isNew) {
+      logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> creó el evento <b>"${escapeHtml(name)}"</b>`);
+      pushAviso("evento", `Nuevo evento: "${name}" · ${fmtDate(date,{long:true})} · ${timeStart}–${timeEnd}`);
+      toast("Evento agendado.", "good");
+    } else {
+      logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> editó el evento <b>"${escapeHtml(name)}"</b>${changes ? ` — ${changes}` : ""}`);
+      toast("Evento actualizado.", "good");
+    }
+    closeModal("modal-event");
+  } catch (e) { console.error(e); toast("No se pudo guardar el evento. Intenta de nuevo.", "bad"); }
 }
 function showEventDetail(id) {
   const e = events.find(e => e.id === id);
@@ -4036,8 +4271,8 @@ function showEventDetail(id) {
     ${e.participants.map(p => { const u = findUser(p.userId); return `<div class="participant-row">${avatarHTML(u,30)}<b style="flex:1;">${escapeHtml(u.fullName)}</b><span class="tag-chip" style="pointer-events:none;">${p.role}</span></div>`; }).join("") || `<p class="text-muted" style="font-size:12.5px;">Sin participantes asignados.</p>`}
   `;
   document.getElementById("event-detail-actions").innerHTML = `
-    ${canDelete ? `<button class="btn btn-danger" onclick="confirmDeleteEvent(${e.id})">Eliminar</button>` : ""}
-    ${canEdit ? `<button class="btn btn-primary" onclick="closeModal('modal-event-detail'); openEventModal(${e.id})">Editar</button>` : ""}
+    ${canDelete ? `<button class="btn btn-danger" onclick="confirmDeleteEvent('${e.id}')">Eliminar</button>` : ""}
+    ${canEdit ? `<button class="btn btn-primary" onclick="closeModal('modal-event-detail'); openEventModal('${e.id}')">Editar</button>` : ""}
     <button class="btn btn-secondary" onclick="closeModal('modal-event-detail')">Cerrar</button>`;
   openModal("modal-event-detail");
 }
@@ -4045,19 +4280,25 @@ function confirmDeleteEvent(id) {
   const e = events.find(e => e.id === id);
   document.getElementById("confirm-title").textContent = "¿Eliminar evento?";
   document.getElementById("confirm-text").textContent = `Se eliminará "${e.name}" del calendario, junto con sus préstamos en la Mochila. Podrás deshacerlo unos segundos después.`;
-  document.getElementById("confirm-action-btn").onclick = () => {
-    const idx = events.findIndex(x=>x.id===id);
-    const [removed] = events.splice(idx, 1);
+  document.getElementById("confirm-action-btn").onclick = async () => {
     const removedLoans = loansForEvent(id);
-    removeLoansForEvent(id);
-    logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó el evento <b>"${escapeHtml(e.name)}"</b>`);
-    closeModal("modal-confirm"); closeModal("modal-event-detail");
-    renderCalendar(); refreshMochilaBadges();
-    showUndoToast(`El evento "${removed.name}" fue eliminado.`, () => {
-      events.splice(idx, 0, removed);
-      loans.push(...removedLoans);
-      renderCalendar(); refreshMochilaBadges();
-    });
+    try {
+      const batch = db.batch();
+      batch.delete(db.collection("events").doc(id));
+      removedLoans.forEach(l => batch.delete(db.collection("loans").doc(l.id)));
+      await batch.commit();
+      logActivity("calendario", `<b>${escapeHtml(currentUser().fullName)}</b> eliminó el evento <b>"${escapeHtml(e.name)}"</b>`);
+      closeModal("modal-confirm"); closeModal("modal-event-detail");
+      showUndoToast(`El evento "${e.name}" fue eliminado.`, async () => {
+        try {
+          const restoreBatch = db.batch();
+          const { id: _eid, ...eventData } = e;
+          restoreBatch.set(db.collection("events").doc(id), eventData);
+          removedLoans.forEach(l => { const { id: lid, ...loanData } = l; restoreBatch.set(db.collection("loans").doc(lid), loanData); });
+          await restoreBatch.commit();
+        } catch (err) { console.error(err); toast("No se pudo deshacer. Intenta de nuevo.", "bad"); }
+      });
+    } catch (err) { console.error(err); toast("No se pudo eliminar el evento. Intenta de nuevo.", "bad"); }
   };
   openModal("modal-confirm");
 }
@@ -4181,7 +4422,7 @@ function openMoneyModal(type) {
   document.getElementById("money-event").value = "";
   openModal("modal-money");
 }
-function saveMoney() {
+async function saveMoney() {
   const type = document.getElementById("money-type").value;
   const name = document.getElementById("money-name").value.trim();
   const desc = document.getElementById("money-desc").value.trim();
@@ -4191,11 +4432,15 @@ function saveMoney() {
   if (!name) return toast("Ingresa un nombre para el movimiento.", "bad");
   if (!amount || amount <= 0) return toast("Ingresa un monto válido.", "bad");
 
-  wtx.unshift({ id: nextId(), type, name, desc, amount, eventId: eventId ? Number(eventId) : null, userId: currentUser().id, date: "2026-08-18", category: type==="egreso"?category:undefined });
-  logActivity("billetera", `<b>${escapeHtml(currentUser().fullName)}</b> registró un ${type} de <b>${money(amount)}</b> (${escapeHtml(name)})`);
-  closeModal("modal-money");
-  renderWallet();
-  toast(type==="ingreso" ? "Ingreso registrado." : "Egreso registrado.", "good");
+  try {
+    await db.collection("transactions").add({
+      type, name, desc, amount, eventId, userId: currentUser().id,
+      date: "2026-08-18", category: type==="egreso" ? category : null
+    });
+    logActivity("billetera", `<b>${escapeHtml(currentUser().fullName)}</b> registró un ${type} de <b>${money(amount)}</b> (${escapeHtml(name)})`);
+    closeModal("modal-money");
+    toast(type==="ingreso" ? "Ingreso registrado." : "Egreso registrado.", "good");
+  } catch (e) { console.error(e); toast("No se pudo registrar el movimiento. Intenta de nuevo.", "bad"); }
 }
 
 /* ================= USUARIOS (admin) ================= */
@@ -4669,14 +4914,23 @@ function renderActivityLog() {
 }
 
 /* ================= PANEL ADMIN ================= */
-function toggleMaintenanceMode() {
+async function toggleMaintenanceMode() {
   if (!requireAdmin("activar el modo mantenimiento")) { document.getElementById("maintenance-toggle").checked = maintenanceMode; return; }
-  maintenanceMode = document.getElementById("maintenance-toggle").checked;
-  toast(maintenanceMode ? "Modo mantenimiento activado. Los demás verán el aviso al iniciar sesión." : "Modo mantenimiento desactivado.", "good");
+  const next = document.getElementById("maintenance-toggle").checked;
+  try {
+    await db.collection("settings").doc("app").set({ maintenanceMode: next }, { merge: true });
+    toast(next ? "Modo mantenimiento activado. Los demás verán el aviso al iniciar sesión." : "Modo mantenimiento desactivado.", "good");
+  } catch (e) {
+    console.error(e);
+    document.getElementById("maintenance-toggle").checked = maintenanceMode;
+    toast("No se pudo cambiar el modo mantenimiento. Intenta de nuevo.", "bad");
+  }
 }
-function updateMaintenanceMessage() {
+async function updateMaintenanceMessage() {
   const val = document.getElementById("maintenance-message-input").value.trim();
-  maintenanceMessage = val || maintenanceMessage;
+  if (!val) return;
+  try { await db.collection("settings").doc("app").set({ maintenanceMessage: val }, { merge: true }); }
+  catch (e) { console.error(e); toast("No se pudo guardar el mensaje. Intenta de nuevo.", "bad"); }
 }
 
 /* ---------- Textos de bienvenida (login / registro) ----------
@@ -4697,25 +4951,22 @@ function applyAuthQuoteTexts() {
   document.getElementById("auth-quote-register-title").innerHTML = formatQuoteText(authQuoteRegisterTitle);
   document.getElementById("auth-quote-register-subtitle").innerHTML = formatPlainText(authQuoteRegisterSubtitle);
 }
+async function saveAppSettingField(field, val) {
+  if (!val.trim()) return;
+  try { await db.collection("settings").doc("app").set({ [field]: val }, { merge: true }); }
+  catch (e) { console.error(e); toast("No se pudo guardar el texto. Intenta de nuevo.", "bad"); }
+}
 function updateAuthQuoteLoginTitle() {
-  const val = document.getElementById("auth-quote-login-title-input").value;
-  authQuoteLoginTitle = val.trim() ? val : authQuoteLoginTitle;
-  applyAuthQuoteTexts();
+  saveAppSettingField("authQuoteLoginTitle", document.getElementById("auth-quote-login-title-input").value);
 }
 function updateAuthQuoteLoginSubtitle() {
-  const val = document.getElementById("auth-quote-login-subtitle-input").value;
-  authQuoteLoginSubtitle = val.trim() ? val : authQuoteLoginSubtitle;
-  applyAuthQuoteTexts();
+  saveAppSettingField("authQuoteLoginSubtitle", document.getElementById("auth-quote-login-subtitle-input").value);
 }
 function updateAuthQuoteRegisterTitle() {
-  const val = document.getElementById("auth-quote-register-title-input").value;
-  authQuoteRegisterTitle = val.trim() ? val : authQuoteRegisterTitle;
-  applyAuthQuoteTexts();
+  saveAppSettingField("authQuoteRegisterTitle", document.getElementById("auth-quote-register-title-input").value);
 }
 function updateAuthQuoteRegisterSubtitle() {
-  const val = document.getElementById("auth-quote-register-subtitle-input").value;
-  authQuoteRegisterSubtitle = val.trim() ? val : authQuoteRegisterSubtitle;
-  applyAuthQuoteTexts();
+  saveAppSettingField("authQuoteRegisterSubtitle", document.getElementById("auth-quote-register-subtitle-input").value);
 }
 
 function renderAdminPanel() {
@@ -4746,33 +4997,35 @@ function renderAdminPanel() {
         ` : u ? `
         <div class="flex gap-1">
           <input class="input" id="service-notice-reply-${n.id}" placeholder="Escribe una respuesta…" style="flex:1;">
-          <button class="btn btn-primary btn-sm" onclick="replyServiceNotice(${n.id})">Responder</button>
+          <button class="btn btn-primary btn-sm" onclick="replyServiceNotice('${n.id}')">Responder</button>
         </div>
         ` : ""}
       </div>
     </div>`;
   }).join("");
 }
-function replyServiceNotice(id) {
+async function replyServiceNotice(id) {
   if (!requireAdmin("responder avisos de servicio")) return;
   const notice = serviceNotices.find(n => n.id === id);
   if (!notice) return;
   const input = document.getElementById("service-notice-reply-" + id);
   const text = (input.value || "").trim();
   if (!text) return toast("Escribe una respuesta antes de enviarla.", "bad");
-  notice.reply = { text, repliedAt: new Date().toISOString() };
-  pushAviso("respuesta", `El Administrador te respondió: "${text}"`, notice.userId);
-  renderAdminPanel();
-  toast("Respuesta enviada.", "good");
+  try {
+    await db.collection("serviceNotices").doc(id).update({ reply: { text, repliedAt: new Date().toISOString() } });
+    pushAviso("respuesta", `El Administrador te respondió: "${text}"`, notice.userId);
+    toast("Respuesta enviada.", "good");
+  } catch (e) { console.error(e); toast("No se pudo enviar la respuesta. Intenta de nuevo.", "bad"); }
 }
-function submitServiceNotice() {
+async function submitServiceNotice() {
   const text = (document.getElementById("service-notice-text").value || "").trim();
   if (!text) return toast("Escribe un mensaje antes de enviarlo.", "bad");
-  serviceNotices.unshift({ id: nextId(), userId: currentUser().id, text, createdAt: new Date().toISOString(), reply: null });
-  document.getElementById("service-notice-text").value = "";
-  closeModal("modal-service-notice");
-  toast("Tu aviso fue enviado al Administrador.", "good");
-  refreshPendingBadge();
+  try {
+    await db.collection("serviceNotices").add({ userId: currentUser().id, text, createdAt: new Date().toISOString(), reply: null });
+    document.getElementById("service-notice-text").value = "";
+    closeModal("modal-service-notice");
+    toast("Tu aviso fue enviado al Administrador.", "good");
+  } catch (e) { console.error(e); toast("No se pudo enviar tu aviso. Intenta de nuevo.", "bad"); }
 }
 
 /* ================= PERFIL ================= */
@@ -4846,12 +5099,26 @@ function seedNoteDate(daysAgo, hour, minute) {
   return d.toISOString();
 }
 // Arranca vacío a propósito: nada de notas de ejemplo en la página real.
+// Vive en la colección `notes` de Firestore — ver attachNotesListener.
 const boardNotes = [];
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+// Las notas vencidas (más de 7 días) se ocultan siempre de inmediato en
+// esta pestaña. El borrado real en Firestore solo se intenta cuando esta
+// cuenta tiene permiso para esa nota en particular (la suya propia, o
+// cualquiera si es Administrador) — así ninguna cuenta intenta un
+// borrado que las reglas de seguridad rechazarían; una nota vencida que
+// no sea tuya se termina de limpiar sola la próxima vez que su autor o
+// un Administrador abran la Pizarra.
 function purgeExpiredNotes() {
   const now = Date.now();
   for (let i = boardNotes.length - 1; i >= 0; i--) {
-    if (now - new Date(boardNotes[i].createdAt).getTime() > NOTE_EXPIRY_MS) boardNotes.splice(i, 1);
+    const n = boardNotes[i];
+    if (now - new Date(n.createdAt).getTime() > NOTE_EXPIRY_MS) {
+      boardNotes.splice(i, 1);
+      if (canDeleteNote(n)) {
+        db.collection("notes").doc(n.id).delete().catch(err => console.error("[Tercer Espacio] Error borrando nota vencida:", err));
+      }
+    }
   }
 }
 function overlapsOtherNotes(excludeId, x, y, board) {
@@ -4883,7 +5150,7 @@ function fmtDateTime(iso) {
 function canDeleteNote(note) {
   const u = currentUser();
   if (!u) return false;
-  if (note.userId === u.id) return true;
+  if (note.createdBy === u.id) return true;
   return isAdminPreview();
 }
 function renderBoard() {
@@ -4894,7 +5161,7 @@ function renderBoard() {
   existing.forEach(el => el.remove());
   emptyState.classList.toggle("hidden", boardNotes.length > 0);
   boardNotes.forEach(n => {
-    const author = findUser(n.userId);
+    const author = findUser(n.createdBy);
     const el = document.createElement("div");
     el.className = "postit " + n.color;
     el.dataset.id = n.id;
@@ -4905,7 +5172,7 @@ function renderBoard() {
     const isCompactBoard = window.matchMedia("(max-width: 720px)").matches;
     el.innerHTML = `
       <div class="postit-pin" data-pin="1" title="${isCompactBoard ? "" : "Arrastra para mover"}"></div>
-      ${canDelete ? `<button class="postit-delete" title="Eliminar nota" onclick="confirmDeleteNote(${n.id})">✕</button>` : ""}
+      ${canDelete ? `<button class="postit-delete" title="Eliminar nota" onclick="confirmDeleteNote('${n.id}')">✕</button>` : ""}
       <div class="postit-text">${escapeHtml(n.text)}</div>
       <div class="postit-meta"><b>${escapeHtml(author ? author.fullName : "Ex integrante")}</b><br>${fmtDateTime(n.createdAt)}</div>
     `;
@@ -4924,9 +5191,13 @@ function initBoardDrag() {
     const pin = e.target.closest('[data-pin="1"]');
     if (!pin) return;
     const noteEl = pin.closest(".postit");
-    const id = Number(noteEl.dataset.id);
+    const id = noteEl.dataset.id;
     const note = boardNotes.find(n => n.id === id);
-    if (!note) return;
+    // Solo se puede arrastrar (y por lo tanto persistir la nueva posición
+    // en Firestore) una nota propia, o cualquiera si eres Administrador —
+    // igual que para eliminarla. Evita un arrastre que las reglas de
+    // seguridad terminarían rechazando al soltar.
+    if (!note || !canDeleteNote(note)) return;
     e.preventDefault();
     const boardRect = board.getBoundingClientRect();
     const startX = e.clientX, startY = e.clientY;
@@ -4955,6 +5226,7 @@ function initBoardDrag() {
       } else {
         note.x = nx; note.y = ny;
         noteEl.style.zIndex = "";
+        db.collection("notes").doc(id).update({ x: nx, y: ny }).catch(err => console.error("[Tercer Espacio] Error moviendo la nota:", err));
       }
     }
     document.addEventListener("pointermove", onMove);
@@ -4976,36 +5248,39 @@ function selectNoteColor(c) { noteColorDraft = c; renderNoteColorPicker(); }
 document.getElementById("note-text").addEventListener("input", (e) => {
   document.getElementById("note-text-count").textContent = e.target.value.length + " / 220";
 });
-function saveNote() {
+async function saveNote() {
   const text = document.getElementById("note-text").value.trim();
   if (!text) return toast("Escribe algo antes de colocar la nota.", "bad");
   const board = document.getElementById("corkboard");
   const spot = findFreeSpot(board);
-  boardNotes.push({
-    id: nextId(), text, color: noteColorDraft, userId: currentUser().id,
-    x: spot.x, y: spot.y, rot: (Math.random() * 8 - 4).toFixed(1),
-    createdAt: new Date().toISOString()
-  });
-  closeModal("modal-note");
-  renderBoard();
-  toast("Nota colocada en la pizarra.", "good");
-  const preview = text.length > 90 ? text.slice(0, 90) + "…" : text;
-  pushAviso("nota", `${currentUser().fullName.split(" ")[0]} dejó una nota nueva en la Pizarra: "${preview}"`);
+  try {
+    await db.collection("notes").add({
+      text, color: noteColorDraft, createdBy: currentUser().id,
+      x: spot.x, y: spot.y, rot: (Math.random() * 8 - 4).toFixed(1),
+      createdAt: new Date().toISOString()
+    });
+    closeModal("modal-note");
+    toast("Nota colocada en la pizarra.", "good");
+    const preview = text.length > 90 ? text.slice(0, 90) + "…" : text;
+    pushAviso("nota", `${currentUser().fullName.split(" ")[0]} dejó una nota nueva en la Pizarra: "${preview}"`);
+  } catch (e) { console.error(e); toast("No se pudo colocar la nota. Intenta de nuevo.", "bad"); }
 }
 function confirmDeleteNote(id) {
   const note = boardNotes.find(n => n.id === id);
   if (!note || !canDeleteNote(note)) { toast("Solo puedes eliminar tus propias notas.", "bad"); return; }
   document.getElementById("confirm-title").textContent = "¿Quitar esta nota?";
   document.getElementById("confirm-text").textContent = "Se quitará de la pizarra. Podrás deshacerlo unos segundos después.";
-  document.getElementById("confirm-action-btn").onclick = () => {
-    const idx = boardNotes.findIndex(n => n.id === id);
-    const [removed] = boardNotes.splice(idx, 1);
-    closeModal("modal-confirm");
-    renderBoard();
-    showUndoToast("La nota fue eliminada.", () => {
-      boardNotes.splice(idx, 0, removed);
-      renderBoard();
-    });
+  document.getElementById("confirm-action-btn").onclick = async () => {
+    try {
+      await db.collection("notes").doc(id).delete();
+      closeModal("modal-confirm");
+      showUndoToast("La nota fue eliminada.", async () => {
+        try {
+          const { id: _omit, ...data } = note;
+          await db.collection("notes").doc(id).set(data);
+        } catch (err) { console.error(err); toast("No se pudo deshacer. Intenta de nuevo.", "bad"); }
+      });
+    } catch (err) { console.error(err); toast("No se pudo eliminar la nota. Intenta de nuevo.", "bad"); }
   };
   openModal("modal-confirm");
 }

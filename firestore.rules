@@ -138,6 +138,26 @@ service cloud.firestore {
       allow delete: if isAdmin() || isEditor() || (isCoop() && coopPerms().invDelete);
     }
 
+    // Contador para los códigos de artículo (TE-AUD-001, etc.) — un solo
+    // documento con un campo por departamento, que se actualiza con una
+    // transacción de Firestore al dar de alta un artículo (ver
+    // reserveItemCode en index.html) para que dos altas al mismo tiempo
+    // nunca terminen con el mismo código. Mismo permiso que dar de alta
+    // en Inventario, porque es parte de esa misma acción.
+    match /counters/inventario {
+      allow read: if isActive();
+      allow write: if isAdmin() || isEditor() || (isCoop() && coopPerms().invEdit);
+    }
+
+    // ---------- Mochila: préstamos de equipo (ligados o no a un evento) ----------
+    // Hereda los mismos permisos que Inventario (igual que en la función
+    // can() del cliente: "la mochila hereda los permisos de inventario").
+    match /loans/{id} {
+      allow read: if isActive();
+      allow create, update: if isAdmin() || isEditor() || (isCoop() && coopPerms().invEdit);
+      allow delete: if isAdmin() || isEditor() || (isCoop() && coopPerms().invDelete);
+    }
+
     // ---------- Calendario ----------
     match /events/{id} {
       allow read: if isActive();

@@ -62,6 +62,7 @@ El cupo se controla con `settings/app.secondAdminUid`: guarda el uid de esa segu
 | `serviceNotices/{id}` | Avisos de servicio al Administrador (y su respuesta). |
 | `activityLog/{id}` | Historial de actividad. |
 | `settings/app` | Un solo documento con configuración global: permisos generales de Cooperador, modo mantenimiento y su mensaje, los textos editables de las pantallas de inicio de sesión y registro, si ya existe un Administrador (`adminBootstrapped`) y el uid del segundo Administrador si hay uno asignado (`secondAdminUid`). Es información pública (se lee sin haber iniciado sesión) para que la propia pantalla de login ya muestre el modo mantenimiento y los textos que puso el Administrador. |
+| `settings/publicStats` | Un solo documento con los tres números que aparecen en la pantalla de inicio de sesión: eventos de este año, miembros activos y artículos en inventario. También es información pública, pero no se calcula ahí: quien no inició sesión no tiene permiso de leer `events`/`users`/`items` directamente, así que cualquier sesión ya activa recalcula estos tres números y los publica aquí cada vez que ve datos nuevos (ver "Por qué la pantalla de login no calcula sus propios números" más abajo). |
 
 ### Por qué existe `usernames/{username}`, y por qué es público
 
@@ -72,6 +73,12 @@ Este documento también es el que permite la vista previa del login (el avatar y
 ### Notificaciones dirigidas (la respuesta del admin a un aviso de servicio)
 
 Cada documento en `avisos` tiene un campo `targetUserId`. Si está vacío, es un aviso general (como "hay un evento nuevo") que todos pueden ver. Si tiene el id de una persona, solo esa persona puede leerlo — así la respuesta del administrador a un aviso de servicio le llega únicamente a quien lo escribió, igual que en el prototipo, pero ahora reforzado por las reglas de seguridad del propio Firebase (no solo por el diseño de la pantalla).
+
+### Por qué la pantalla de login no calcula sus propios números
+
+La pantalla de inicio de sesión muestra tres cifras a modo de vitrina ("Eventos este año", "Miembros activos", "Artículos en inventario"). El prototipo original las calculaba ahí mismo, leyendo los arreglos de eventos/usuarios/artículos — pero eso ya no funciona con datos reales: las reglas de seguridad exigen tener sesión iniciada y estar activo para leer `events`, `users` o `items` (ver más abajo), así que alguien que todavía no entró no puede leer esa información para calcular nada, ni siquiera para mostrar un número.
+
+La solución fue publicar esos tres números ya calculados en `settings/publicStats`, que sí es de lectura pública. Cada vez que una sesión con acceso (alguien ya conectado) recibe datos nuevos de Inventario, Calendario o Usuarios, recalcula los tres números y los vuelve a publicar ahí (`publishPublicStats()` en `index.html`). Así el sistema se mantiene al día solo, sin necesitar un servidor propio: basta con que cualquier persona del colectivo tenga la página abierta de vez en cuando para que la cifra pública quede actualizada.
 
 ## Reglas de seguridad (quién puede ver y cambiar qué)
 

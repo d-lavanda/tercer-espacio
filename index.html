@@ -2843,7 +2843,7 @@ let myProfile = null;
 // exista el documento users/{uid} y cerrarle la sesión a alguien que
 // apenas se está registrando.
 let suppressAuthHandler = false;
-let unsubUsers = null, unsubPasswordResets = null, unsubAppSettings = null;
+let unsubUsers = null, unsubPasswordResets = null, unsubAppSettings = null, unsubPublicStats = null;
 let unsubItems = null, unsubLoans = null, unsubCounters = null, unsubEvents = null, unsubWtx = null,
     unsubNotes = null, unsubAvisosGeneral = null, unsubAvisosMine = null, unsubServiceNotices = null,
     unsubActivityLog = null;
@@ -2875,9 +2875,10 @@ function detachAllFirestoreListeners() {
   activityLog.length = 0;
   _avisosGeneralSnap = null; _avisosMineSnap = null;
   // settings/app (permisos generales, segundo admin, mantenimiento, textos
-  // de login/registro) NO se reinicia aquí: es información pública que
+  // de login/registro) y settings/publicStats (los tres números de la
+  // pantalla de login) NO se reinician aquí: son información pública que
   // sigue viva antes y después de iniciar sesión — ver más abajo, se
-  // conecta una sola vez y nunca se desconecta.
+  // conectan una sola vez y nunca se desconectan.
 }
 
 // Mantiene en vivo settings/app: los permisos generales de Cooperador,
@@ -2904,6 +2905,39 @@ function attachAppSettingsListener() {
     if (document.getElementById("maintenance-toggle")) document.getElementById("maintenance-toggle").checked = maintenanceMode;
     if (document.body.classList.contains("app-active")) renderCurrentModule();
   }, (err) => console.error("[Tercer Espacio] Error escuchando la configuración general:", err));
+}
+
+// Los tres números decorativos de la pantalla de inicio de sesión
+// ("Eventos este año", "Miembros activos", "Artículos en inventario")
+// no se pueden calcular ahí mismo: quien todavía no inició sesión no
+// tiene permiso de leer events/users/items (ver firestore.rules). Por
+// eso cualquier sesión ya activa los recalcula y los publica en el
+// documento público settings/publicStats (ver publishPublicStats más
+// abajo) cada vez que ve datos frescos, y la pantalla de login solo
+// lee ese documento — igual que settings/app, se conecta una sola vez,
+// ANTES de iniciar sesión, y nunca se desconecta.
+function attachPublicStatsListener() {
+  if (unsubPublicStats) return;
+  unsubPublicStats = db.collection("settings").doc("publicStats").onSnapshot((doc) => {
+    const data = doc.exists ? doc.data() : {};
+    document.getElementById("stat-eventos-auth").textContent = data.eventsThisYear ?? "—";
+    document.getElementById("stat-miembros-auth").textContent = data.activeMembers ?? "—";
+    document.getElementById("stat-items-auth").textContent = data.inventoryItems ?? "—";
+  }, (err) => console.error("[Tercer Espacio] Error escuchando las estadísticas públicas:", err));
+}
+// Recalcula esos tres números a partir de lo que esta sesión ya tiene
+// cargado y los publica. Se llama después de cada snapshot de
+// items/events/users (ver attachItemsListener, attachEventsListener,
+// attachUsersListener) para que el dato público se mantenga al día
+// solo, sin depender de que nadie lo actualice a mano.
+function publishPublicStats() {
+  if (!myProfile) return;
+  const thisYear = new Date().getFullYear();
+  db.collection("settings").doc("publicStats").set({
+    eventsThisYear: events.filter(e => new Date(e.date + "T00:00:00").getFullYear() === thisYear).length,
+    activeMembers: users.filter(u => u.status === "activo").length,
+    inventoryItems: items.reduce((s, i) => s + i.qty, 0)
+  }, { merge: true }).catch((err) => console.error("[Tercer Espacio] Error publicando estadísticas públicas:", err));
 }
 
 /* ---------- Historial de actividad ---------- */
@@ -2944,6 +2978,7 @@ function attachItemsListener() {
   unsubItems = db.collection("items").onSnapshot((snap) => {
     items.length = 0;
     snap.forEach((doc) => items.push(Object.assign({ id: doc.id }, doc.data())));
+    publishPublicStats();
     if (document.body.classList.contains("app-active")) renderCurrentModule();
   }, (err) => console.error("[Tercer Espacio] Error escuchando el inventario:", err));
 }
@@ -2963,6 +2998,7 @@ function attachEventsListener() {
   unsubEvents = db.collection("events").onSnapshot((snap) => {
     events.length = 0;
     snap.forEach((doc) => events.push(Object.assign({ id: doc.id }, doc.data())));
+    publishPublicStats();
     if (document.body.classList.contains("app-active")) renderCurrentModule();
   }, (err) => console.error("[Tercer Espacio] Error escuchando el calendario:", err));
 }
@@ -3039,6 +3075,7 @@ function attachUsersListener() {
     });
     users = all;
     pendingUsers = pending;
+    publishPublicStats();
 
     // Si mi propio perfil cambió (un admin me cambió el rol, o cerró mi
     // sesión remotamente desde Usuarios), reacciona de inmediato: lo que
@@ -3096,8 +3133,11 @@ async function enterAppAsUser(uid, data) {
 // login/registro, permisos generales): se conecta de una vez, sin
 // esperar a que alguien inicie sesión, para que la propia pantalla de
 // inicio de sesión ya refleje lo último que puso el Administrador.
+// settings/publicStats (los tres números de la pantalla de login) es
+// igual de pública, por la misma razón.
 if (firebaseReady) {
   attachAppSettingsListener();
+  attachPublicStatsListener();
 }
 
 if (firebaseReady) {
@@ -5289,9 +5329,10 @@ function confirmDeleteNote(id) {
 (function init() {
   applyTheme(state.theme);
   applyAuthQuoteTexts();
-  document.getElementById("stat-eventos-auth").textContent = events.length;
-  document.getElementById("stat-miembros-auth").textContent = users.length;
-  document.getElementById("stat-items-auth").textContent = items.reduce((s,i)=>s+i.qty,0);
+  // Los tres números de la pantalla de login (stat-eventos-auth, etc.)
+  // ya NO se pintan aquí: se leen en vivo de settings/publicStats (ver
+  // attachPublicStatsListener) porque quien todavía no inició sesión no
+  // tiene permiso de leer events/users/items directamente.
   populateDeptSelect("item-department");
   initBoardDrag();
   setTimeout(() => document.getElementById("boot-splash").classList.add("hidden"), 950);

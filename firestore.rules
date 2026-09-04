@@ -242,5 +242,18 @@ service cloud.firestore {
       allow update: if isAdmin()
                     && request.resource.data.get('adminBootstrapped', true) == resource.data.get('adminBootstrapped', true);
     }
+
+    // Cache pública de los tres números decorativos que muestra la
+    // pantalla de inicio de sesión ("Eventos este año", "Miembros
+    // activos", "Artículos en inventario"). Quien todavía no inició
+    // sesión no puede leer events/users/items directamente (ver esas
+    // reglas más arriba), así que cualquier sesión ya activa los
+    // recalcula y los publica aquí cada vez que ve datos frescos (ver
+    // publishPublicStats en index.html). No es información sensible —
+    // son solo tres conteos.
+    match /settings/publicStats {
+      allow read: if true;
+      allow write: if isActive();
+    }
   }
 }
